@@ -1,0 +1,127 @@
+# Larkspur's execution-sandbox BASE image — the container that agent tool
+# calls (`bash`, `run_python`, and the file tools) execute inside. A Fedora +
+# Python data-analysis stack (pandas, numpy, scipy, matplotlib, seaborn,
+# scikit-learn, pyarrow, ipykernel), document/image tooling (Pillow, openpyxl,
+# xlsxwriter, pypdf, reportlab, BeautifulSoup, lxml, pyyaml, tabulate), and a
+# few read-only CLI tools (git, jq, ripgrep, pandoc, ImageMagick). The
+# "Analyze a dataset" card relies on the Python stack.
+#
+# The sandbox image is a PER-BUNDLE artifact: add the packages YOUR agents
+# need. Base tracks fedora-minimal:latest, so every rebuild picks up current
+# upstream patches with no manual digest bumps. Pin a digest here
+# (FROM registry.fedoraproject.org/fedora-minimal@sha256:<digest>) if you want
+# byte-for-byte reproducible, audit-stable builds instead.
+#
+# ── the two ways this image gets built and consumed ─────────────────────────
+#
+# PODMAN (single box): fleet's scripts/build-sandbox-image.sh builds this file
+# with the build context `sandbox/`, tags it from the manifest's `sandbox.tag`,
+# and runs it as a rootless one-shot container:
+#
+#     podman run --rm --read-only --cap-drop=ALL \
+#       --security-opt=no-new-privileges --network=none \
+#       --tmpfs=/tmp:rw,size=128m \
+#       --tmpfs=/home/sandbox/.ipython:rw,size=32m \
+#       --tmpfs=/home/sandbox/.cache:rw,size=32m \
+#       --volume=/path/to/workspace:/workspace:rw,Z \
+#       localhost/larkspur-sandbox:latest
+#
+# KUBERNETES: this image is the BASE that deploy/kubernetes/Containerfile.sandbox
+# layers the bundle's read-only doc dirs onto. That derived image is what a
+# cluster runs, from a registry — a `localhost/` tag is not something a node can
+# pull. `make sandbox` builds both in order.
+#
+# ── constraints fleet's kubernetes backend places on this image ─────────────
+# These are not stylistic. internal/sandbox/k8s_backend.go builds the pod spec
+# and hard-codes them; a base image that violates one produces a pod that
+# starts and then fails on the first tool call.
+#
+#   * runAsUser / runAsGroup / fsGroup are 1000, and runAsNonRoot is true, so
+#     the image MUST define a uid-1000 non-root user (here: `sandbox`).
+#   * scratch emptyDirs are mounted at /tmp, /home/sandbox/.ipython,
+#     /home/sandbox/.cache and /home/sandbox/.config — so $HOME must be
+#     /home/sandbox. Note .config, which the podman flag list above does not
+#     tmpfs-mount; it is created below so both backends see the same tree.
+#   * the root filesystem is read-only, so nothing may need to write outside
+#     those mounts and the workspace.
+#   * PID 1 is `sleep infinity` and every operation is an exec, so `sleep` must
+#     exist on PATH.
+#   * python3 must exist: fleet uploads its bridge and fileops scripts into the
+#     pod and runs them with it. A sandbox image without python3 breaks the
+#     FILE TOOLS, not just run_python.
+#
+# /opt/bridge below is the PODMAN bridge bind-mount point. The kubernetes
+# backend uses an emptyDir at /opt/fleet-bridge instead — it has no host
+# filesystem to bind from — and creates that mount itself. The directory is
+# kept for the podman path; it is inert in a pod.
+#
+# Network-shaped tools (curl, wget) are intentionally absent: the image is
+# meant for sealed (--network=none / egress=none) use, and shipping them would
+# only mislead callers.
+
+FROM registry.fedoraproject.org/fedora-minimal:latest
+
+# Python stack via Fedora RPMs rather than pip. Fedora rebuilds the native
+# packages against whatever python3 it ships, which sidesteps the "no wheel for
+# this Python" trap, and shared libs dedupe cleanly across the stack.
+RUN microdnf install -y \
+        --setopt=install_weak_deps=0 \
+        --setopt=tsflags=nodocs \
+        ImageMagick \
+        bash \
+        ca-certificates \
+        coreutils \
+        findutils \
+        git \
+        grep \
+        jq \
+        less \
+        pandoc \
+        unzip \
+        python3 \
+        python3-pip \
+        python3-beautifulsoup4 \
+        python3-ipykernel \
+        python3-jupyter-client \
+        python3-lxml \
+        python3-matplotlib \
+        python3-numpy \
+        python3-openpyxl \
+        python3-pandas \
+        python3-pillow \
+        python3-pyarrow \
+        python3-pypdf \
+        python3-pyyaml \
+        python3-reportlab \
+        python3-requests \
+        python3-scikit-learn \
+        python3-scipy \
+        python3-seaborn \
+        python3-tabulate \
+        python3-xlsxwriter \
+        ripgrep \
+        sed \
+        shadow-utils \
+    && microdnf clean all \
+    && rm -rf /var/cache/dnf /var/cache/yum /var/log/dnf* /var/log/yum* /usr/share/locale/* /usr/share/man
+
+# Pre-warm matplotlib's font cache so the first plot at runtime does not pay
+# the multi-second TTF scan.
+RUN python3 -c "import matplotlib.pyplot; matplotlib.pyplot.figure().savefig('/tmp/_warm.png'); import os; os.remove('/tmp/_warm.png')"
+
+# Non-root user with a real $HOME at the path both backends expect.
+# /home/sandbox is read-only at runtime; the directories that must be writable
+# (.ipython, .cache, .config, /tmp) are tmpfs under podman and emptyDirs under
+# kubernetes. They are created here so the mount points exist either way.
+RUN useradd --create-home --uid 1000 --shell /bin/bash sandbox \
+    && mkdir -p /home/sandbox/.cache /home/sandbox/.config /home/sandbox/.ipython \
+                /workspace /opt/bridge \
+    && cp -r /root/.cache/matplotlib /home/sandbox/.cache/ 2>/dev/null || true \
+    && chown -R sandbox:sandbox /home/sandbox /workspace /opt/bridge
+
+USER sandbox
+WORKDIR /workspace
+
+# PID 1 keeps the namespace alive for callers that exec in repeatedly — a
+# long-lived podman bridge process, or the kubernetes backend's pods/exec.
+CMD ["sleep", "infinity"]

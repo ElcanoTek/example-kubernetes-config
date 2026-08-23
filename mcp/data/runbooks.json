@@ -1,0 +1,45 @@
+{
+  "_comment": "Placeholder content for the Larkspur example bundle. Nothing here describes a real company, system, credential, or host. Replace the whole file with your own runbooks — the server does not care what the bodies say, only that each entry has id, title, category, summary, body, and tags.",
+  "runbooks": [
+    {
+      "id": "rb-001",
+      "title": "Rolling out a service change",
+      "category": "delivery",
+      "summary": "How a change reaches production: review, staging soak, progressive rollout, and what makes us stop.",
+      "body": "Every change goes through review, lands on the staging environment, and soaks for at least one business hour before it is promoted. Promotion is progressive: one canary instance, then 10%, then the fleet. Stop the rollout and roll back if error rate rises above baseline, if p99 latency doubles, or if any alert fires that was quiet before the change. Rolling back is never a failure; discovering the problem in production twice is.",
+      "tags": ["release", "rollout", "canary", "rollback"]
+    },
+    {
+      "id": "rb-002",
+      "title": "Rotating a service credential",
+      "category": "security",
+      "summary": "The order of operations that rotates a credential without an outage.",
+      "body": "Issue the new credential first and leave the old one valid. Update the secret store, then restart the consumers so they read it at boot. Verify each consumer is authenticating with the new credential before you revoke the old one. Revoke last, and record the rotation date. A rotation that starts with revocation is an outage with extra steps.",
+      "tags": ["credentials", "rotation", "secrets"]
+    },
+    {
+      "id": "rb-003",
+      "title": "Declaring and running an incident",
+      "category": "incident",
+      "summary": "When to declare, who does what, and what must exist by the end.",
+      "body": "Declare when customer-visible behavior is wrong and you do not yet know why. One person runs the incident and does not also debug. Communicate on a fixed cadence even when the update is 'still investigating'. By the end there must be a timeline with timestamps, a stated impact window, and the specific change or condition that started it. A cause that cannot be pointed at is not a cause.",
+      "tags": ["incident", "oncall", "timeline", "severity"]
+    },
+    {
+      "id": "rb-004",
+      "title": "Reading the weekly platform report",
+      "category": "reporting",
+      "summary": "What each number in the weekly report means and which ones are allowed to be estimates.",
+      "body": "Deployment count and change-failure rate come from the release tracker and are exact. Time-to-restore is computed from incident timelines and is only as good as those timelines. Anything the report cannot compute from a source is left blank, never estimated: a blank cell prompts a question, and an invented number prevents one.",
+      "tags": ["metrics", "report", "weekly", "dora"]
+    },
+    {
+      "id": "rb-005",
+      "title": "Onboarding to the platform",
+      "category": "people",
+      "summary": "Access, environments, and the first week's checklist for a new teammate.",
+      "body": "Access is requested through the normal request flow and granted by role, never by copying another person's grants. Set up a local environment on day one and deploy something trivial to staging on day two — the goal is to exercise the whole path early, while someone is watching. Ask questions in the shared channel rather than in a direct message so the answer is searchable next time.",
+      "tags": ["onboarding", "access", "new-hire"]
+    }
+  ]
+}

@@ -1,0 +1,140 @@
+# Helm values overlay for running this bundle on a LOCAL kind cluster.
+#
+#   helm upgrade --install larkspur /path/to/fleet/deploy/helm/fleet \
+#     --namespace larkspur \
+#     -f deploy/kubernetes/values-kind.yaml \
+#     --set image.repository=localhost/larkspur-fleet --set image.tag=dev \
+#     --set sandbox.image=localhost/larkspur-sandbox:dev
+#
+# This is an EVALUATION overlay. It is not values-example.yaml with the
+# registry swapped out — it deliberately trades away four production
+# properties, and each one is called out below so you never promote this file.
+# Full walkthrough: docs/LOCAL-CLUSTER-KIND.md.
+
+# ── images: side-loaded, never pulled ───────────────────────────────────────
+image:
+  # `kind load image-archive` puts the image in each node's containerd store.
+  # Never = the kubelet must not try a registry, since localhost/ is not one.
+  pullPolicy: Never
+
+# No registry, so no pull secret. (Overrides nothing — the chart default is
+# already empty — but stating it keeps a copy-paste from values-example.yaml
+# from carrying a `regcred` that does not exist here.)
+imagePullSecrets: []
+
+# ── sandbox ─────────────────────────────────────────────────────────────────
+sandbox:
+  backend: kubernetes
+  kubernetes:
+    namespace: ""
+    podServiceAccount:
+      create: true
+      name: larkspur-sandbox
+    # Empty: the sandbox image is side-loaded, not pulled.
+    #
+    # HONEST NOTE: fleet hard-codes imagePullPolicy: IfNotPresent on every
+    # sandbox pod it creates (internal/sandbox/k8s_backend.go), precisely so a
+    # side-loaded image works. There is no chart value for it, and you do not
+    # need one.
+    imagePullSecret: ""
+    runtimeClass: ""
+    seccompProfile: ""
+    # Same requirement as production: the sandbox image bakes the bundle's doc
+    # dirs, so keep this true and build the sandbox image with
+    # deploy/kubernetes/Containerfile.sandbox, not the bare base.
+    bundleDocsInImage: true
+    nodeSelector: {}
+    tolerations: []
+  # Smaller than production so a laptop can actually schedule a sandbox pod
+  # alongside the control plane and Postgres. Requests equal limits, so these
+  # numbers are reserved, not just capped.
+  memory: "1g"
+  cpus: "1.0"
+  diskGB: 5
+  # DEGRADED #1: no warm pool. Every turn pays a cold pod start (schedule +
+  # exec of the bridge upload). Fine for a walkthrough, wrong for production.
+  warmSize: 0
+
+# ── storage ─────────────────────────────────────────────────────────────────
+workspace:
+  create: true
+  claimName: fleet-workspace
+  size: 5Gi
+  # DEGRADED #2: kind's default `standard` class is ReadWriteOnce. That works
+  # here only because a one-node cluster puts the control plane and every
+  # sandbox pod on the same node. On any multi-node cluster this silently
+  # becomes unschedulable sandbox pods. Production needs a ReadWriteMany class
+  # — see values-example.yaml.
+  storageClassName: ""
+  accessModes:
+    - ReadWriteOnce
+
+data:
+  create: true
+  claimName: fleet-data
+  size: 5Gi
+  storageClassName: ""
+  accessModes:
+    - ReadWriteOnce
+
+# ── egress ──────────────────────────────────────────────────────────────────
+networkPolicies:
+  # DEGRADED #3: this object MUST exist — fleet's boot preflight refuses to
+  # start without it — but kind's default CNI (kindnet) does NOT implement
+  # NetworkPolicy. So the object is there, the preflight passes, and a
+  # "sealed" sandbox can still reach the internet. That is not a fleet bug and
+  # it is not a kind bug; it is the honest limit of expressing a seal as a
+  # policy object. To make the seal real on kind, create the cluster with
+  # `disableDefaultCNI: true` and install Calico or Cilium
+  # (docs/LOCAL-CLUSTER-KIND.md shows both).
+  denyAll:
+    create: true
+    name: fleet-sandbox-deny-all
+  openEgress:
+    create: false
+    blockedCIDRs: []
+
+# ── config ──────────────────────────────────────────────────────────────────
+config:
+  # Create it first:
+  #   kubectl -n larkspur create secret generic larkspur-secrets \
+  #     --from-literal=OPENROUTER_API_KEY=sk-or-...
+  # The DB URLs come from the chart's in-cluster Postgres below, so they do
+  # not belong in this Secret on the kind path.
+  existingSecret: larkspur-secrets
+  env:
+    # `open` rather than `lockdown` on purpose: kindnet does not enforce the
+    # deny-all policy anyway, and `open` at least does not claim a seal it is
+    # not delivering. `allowlisted` is refused at boot under this backend.
+    FLEET_DEFAULT_NETWORK_MODE: open
+    FLEET_MAX_CONCURRENT_AGENTS: "2"
+    FLEET_TIMEZONE: "UTC"
+    PERSONA_DEFAULT: assistant
+
+# ── database ────────────────────────────────────────────────────────────────
+postgres:
+  # DEGRADED #4: the chart's evaluation Postgres — one replica, one PVC, no
+  # backups, a password Helm generates into the <release>-postgres Secret.
+  # Enabled here so the walkthrough needs no external database; never in
+  # production.
+  enabled: true
+  size: 5Gi
+
+# ── exposure ────────────────────────────────────────────────────────────────
+web:
+  enabled: false
+service:
+  type: ClusterIP
+ingress:
+  enabled: false
+
+# ── control plane ───────────────────────────────────────────────────────────
+# Sized to fit beside a sandbox pod and Postgres on one Docker VM. Raise the
+# requests and you will get an unschedulable control plane on a 4-CPU laptop
+# instead of a clear error.
+resources:
+  requests:
+    cpu: "500m"
+    memory: 1Gi
+  limits:
+    memory: 2Gi

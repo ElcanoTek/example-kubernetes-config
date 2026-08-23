@@ -1,0 +1,87 @@
+# Larkspur's SANDBOX image for the Kubernetes path: this bundle's own sandbox
+# base image plus a read-only snapshot of the bundle docs the agent reads from
+# INSIDE a sandbox.
+#
+# BUILD CONTEXT IS THIS REPO'S ROOT, not this directory, and it takes two
+# builds because the base and the overlay have different contexts:
+#
+#   TAG=$(git rev-parse --short HEAD)
+#   # 1. the base — context is sandbox/, exactly like fleet's canonical
+#   #    scripts/build-sandbox-image.sh builds it on a single box.
+#   podman build -t localhost/larkspur-sandbox-base:$TAG \
+#     -f sandbox/Containerfile sandbox/
+#   # 2. the overlay — context is the repo root, so it can reach protocols/ etc.
+#   podman build -t REGISTRY/larkspur-sandbox:$TAG \
+#     --build-arg BASE=localhost/larkspur-sandbox-base:$TAG \
+#     -f deploy/kubernetes/Containerfile.sandbox .
+#
+# `make sandbox` does both. BASE has no default on purpose: an accidental
+# `:latest` is how you ship a docs snapshot layered onto an unrelated base.
+#
+# WHY THIS EXISTS. Under podman, fleet bind-mounts protocols/, personas/,
+# system_prompts/ and the skills dir into the sandbox read-only at the same
+# absolute path, and symlinks them into the per-conversation workspace — which
+# is why `cat protocols/ask-the-runbooks.md` resolves for view_file, bash and
+# run_python alike. Under the kubernetes backend a pod mounts ONLY the
+# workspace claim. There is no host filesystem to bind from, so fleet drops
+# those mounts (it logs that it did) and the workspace symlinks dangle.
+#
+# Baking the docs at the SAME absolute path the control-plane image uses for
+# FLEET_CLIENT_CONFIG_DIR makes those absolute symlink targets resolve again,
+# which fixes bash and run_python.
+#
+# Baking is only half. fleet still refuses the FILE TOOLS' path anchors for
+# those roots unless the deployment DECLARES that the image carries them —
+# `sandbox.kubernetes.bundleDocsInImage: true` in values-example.yaml, which
+# the chart renders as FLEET_SANDBOX_K8S_BUNDLE_DOCS_IN_IMAGE. With both,
+# `view_file protocols/…` works too. With only this COPY, the file tools stay
+# refused ("fileop root is not inside a sandbox bind mount") and only bash
+# reads. WRITES beneath these roots are refused either way — the anchors are
+# re-admitted READ-ONLY, so a turn can never rewrite its own protocols.
+#
+# SNAPSHOT, NOT SOURCE. The control-plane image is authoritative for this
+# bundle; what lands here is a copy for in-sandbox reads. Build both images
+# from the SAME commit of this repo and roll them together, or an agent reads
+# one release's protocols while the control plane runs another's. Nothing
+# enforces this — it is release discipline, and `make images` exists so the
+# easy path is the correct one.
+#
+# NOT THE PUBLISHER. .github/workflows/publish-sandbox-image.yml still builds
+# sandbox/Containerfile with fleet's canonical script and publishes the BASE
+# image for the single-box podman install. Nothing about that path changes.
+
+ARG BASE
+FROM ${BASE}
+
+# COPY runs as root even under the base image's USER, but chown/chmod need it
+# named explicitly.
+USER root
+
+# The same absolute path as the control-plane image's FLEET_CLIENT_CONFIG_DIR.
+#
+# mcp/ and manifest.yaml are DELIBERATELY ABSENT. The connectors run host-side
+# in the control-plane pod and must never be reachable — let alone readable —
+# from a sandbox. A manifest in here would put the full env-var contract of
+# every connector one `cat` away from model-authored code.
+COPY protocols/       /opt/fleet/client/protocols/
+COPY personas/        /opt/fleet/client/personas/
+COPY system_prompts/  /opt/fleet/client/system_prompts/
+COPY skills/          /opt/fleet/client/skills/
+
+# Root-owned, world-readable, no write bit for the sandbox user (uid 1000).
+# The pod also runs with a read-only root filesystem, so this is belt and
+# braces — but it is the belt that survives someone relaxing that. Bundled
+# scripts are invoked as `python3 skills/<name>/scripts/foo.py`, so no exec bit
+# is needed.
+RUN chown -R 0:0 /opt/fleet/client \
+    && chmod -R a-w,a+rX /opt/fleet/client
+
+# Back to the unprivileged user the base image defines. uid 1000 / $HOME
+# /home/sandbox is not cosmetic: fleet's kubernetes backend mounts scratch
+# emptyDirs at /home/sandbox/.cache, /home/sandbox/.ipython and
+# /home/sandbox/.config and runs the pod as uid/gid 1000
+# (internal/sandbox/k8s_backend.go buildSandboxPod). A base image with a
+# different user or home directory produces a pod that starts and then fails
+# on the first python call.
+USER sandbox
+WORKDIR /workspace

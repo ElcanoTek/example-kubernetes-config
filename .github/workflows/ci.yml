@@ -1,0 +1,169 @@
+# CI for example-kubernetes-config.
+#
+# example-config, the podman-shaped sibling template, ships no ci.yml at all —
+# its only workflows build the sandbox image. That is a gap, and this file is
+# the fix: a public template that nobody lints is a public template that rots.
+#
+# WHAT THIS CANNOT DO, stated up front so nobody reads a green tick as more
+# than it is: it does not render fleet's Helm chart. Rendering needs a fleet
+# checkout, and this repo deliberately does not vendor one (that would put an
+# engine version into bundle data). fleet's chart also ships no values schema,
+# so even `helm lint` would pass over a misspelled value key. The real gate for
+# deploy/kubernetes/values-*.yaml is `make helm-template FLEET=…` run locally,
+# and the PR template asks for what it printed.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install gitleaks
+        # Pin a specific release and verify its checksum so the gate is
+        # reproducible and cannot be silently changed by an upstream re-tag.
+        # The scan reads .gitleaks.toml (full default ruleset + path allowlist)
+        # and .gitleaksignore from the repo root automatically.
+        env:
+          GITLEAKS_VERSION: '8.30.1'
+          GITLEAKS_SHA256: '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb'
+        run: |
+          set -euo pipefail
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSL -o "$tarball" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${tarball}"
+          echo "${GITLEAKS_SHA256}  ${tarball}" | sha256sum -c -
+          tar -xzf "$tarball" gitleaks
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: Run gitleaks
+        # This bundle stores only env-var NAMES, never values, so a finding
+        # here is a real leak.
+        run: gitleaks dir . --redact --exit-code 1
+
+  mcp:
+    name: MCP lint + tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            mcp/requirements.txt
+            mcp/requirements-dev.txt
+
+      - name: Install dependencies
+        # requirements-dev.txt includes requirements.txt, so this installs both
+        # and also proves the two files still resolve together.
+        run: pip install -r mcp/requirements-dev.txt
+
+      - name: Ruff
+        # Run from the repo root so ruff discovers ruff.toml (config lives at
+        # the repo root, not under mcp/).
+        run: |
+          ruff check mcp/
+          ruff format --check mcp/
+
+      - name: Pytest (excluding expensive)
+        # Run from the repo root so pytest discovers pytest.ini (which registers
+        # the `expensive` marker). Expensive tests hit external APIs and stay
+        # deselected. Covers the servers themselves plus the manifest/deployment
+        # contract tests — see mcp/tests/test_deployment_contract.py, which is
+        # what catches "someone added a directory the agent reads and forgot the
+        # COPY line in a Containerfile".
+        run: pytest mcp/ -m 'not expensive' -q
+
+  workflows:
+    name: Workflow + shell lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: actionlint
+        uses: docker://rhysd/actionlint:latest
+        with:
+          args: -color
+
+      - name: shellcheck
+        # Any .sh this repo grows, plus the skills' shell scripts if any.
+        # `|| true` is deliberately ABSENT: a shell script nobody checks is how
+        # a template ships a broken installer.
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(git ls-files '*.sh')
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "no shell scripts in this repo"
+            exit 0
+          fi
+          shellcheck "${files[@]}"
+
+  deploy-artifacts:
+    name: Deployment artifact sanity
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Values files parse, and carry no literal secrets
+        # Not a schema check — see this file's header for why there cannot be
+        # one here. This catches the two things that ARE checkable without a
+        # cluster or a fleet checkout: the YAML is valid, and nobody pasted a
+        # real value where a variable belongs.
+        run: |
+          python3 - <<'PY'
+          import re, sys, pathlib, yaml
+          bad = []
+          for p in sorted(pathlib.Path("deploy/kubernetes").glob("values-*.yaml")):
+              doc = yaml.safe_load(p.read_text())
+              if not isinstance(doc, dict):
+                  bad.append(f"{p}: not a mapping")
+                  continue
+              flat = p.read_text()
+              for pat, why in [
+                  (r"sk-or-[A-Za-z0-9]{8,}", "an OpenRouter key"),
+                  (r"AKIA[0-9A-Z]{16}", "an AWS access key id"),
+                  (r"ghp_[A-Za-z0-9]{20,}", "a GitHub token"),
+              ]:
+                  if re.search(pat, flat):
+                      bad.append(f"{p}: looks like it contains {why}")
+          if bad:
+              print("\n".join(bad)); sys.exit(1)
+          print("values files OK")
+          PY
+
+      - name: Containerfiles reference only paths that exist
+        # Every COPY source in the two deployment Containerfiles must be a real
+        # path in this repo, EXCEPT the staged fleet binary, which is a build
+        # artifact. A COPY of a deleted directory fails the image build — this
+        # turns that into a PR failure instead.
+        run: |
+          set -euo pipefail
+          status=0
+          for cf in deploy/kubernetes/Containerfile.control-plane deploy/kubernetes/Containerfile.sandbox; do
+            while read -r src; do
+              [ "$src" = "deploy/kubernetes/fleet" ] && continue
+              if [ ! -e "$src" ]; then
+                echo "$cf: COPY source '$src' does not exist"
+                status=1
+              fi
+            done < <(grep -E '^COPY ' "$cf" | awk '{print $2}')
+          done
+          exit "$status"

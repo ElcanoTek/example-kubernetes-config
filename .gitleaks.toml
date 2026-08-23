@@ -1,0 +1,24 @@
+# gitleaks configuration for example-kubernetes-config.
+#
+# This is a PUBLIC bundle: no real credentials belong in it. The repo ships
+# only env-var NAMES (in manifest.yaml and the values overlays) and obvious
+# placeholders. gitleaks inherits its full built-in ruleset; the path allowlist
+# below just skips gitignored build/dependency artifacts so a local
+# `gitleaks dir .` run is clean (a fresh CI checkout has none of these).
+#
+# deploy/kubernetes/fleet is the staged control-plane binary — a build
+# artifact, gitignored, and several hundred MB of Go that gitleaks would
+# otherwise scan byte by byte on every local run.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Global path allowlist for gitignored build/dependency artifacts"
+paths = [
+  '''\.venv/''',
+  '''__pycache__/''',
+  '''\.pytest_cache/''',
+  '''\.ruff_cache/''',
+  '''deploy/kubernetes/fleet$''',
+]

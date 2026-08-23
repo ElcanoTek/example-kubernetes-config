@@ -1,0 +1,49 @@
+# Publish this bundle's BASE sandbox image to GHCR.
+#
+# Calls fleet's reusable publish workflow: builds sandbox/Containerfile with the
+# canonical scripts/build-sandbox-image.sh and pushes an immutable {git-sha} tag
+# plus :latest. The run summary prints the exact ref.
+#
+# WHAT THIS IS AND IS NOT ON THE CLUSTER PATH. This publishes the BASE image —
+# the execution environment, with no bundle docs in it. A cluster runs the
+# DERIVED image that deploy/kubernetes/Containerfile.sandbox builds on top of a
+# base, and that build needs the repo root as its context, which this reusable
+# workflow (context: sandbox/) cannot provide. So this workflow is:
+#
+#   * the whole story for the single-box podman install, and
+#   * a convenience for the cluster path — `make sandbox` builds the base
+#     locally anyway, and building both locally from one commit is what keeps
+#     the control-plane and sandbox images in step.
+#
+# Do NOT point a cluster's sandbox.image at what this publishes. It has no
+# protocols/, personas/, system_prompts/ or skills/ in it, so every in-sandbox
+# read of a bundle path fails — and with bundleDocsInImage declared, fails as a
+# confusing not-found rather than an honest refusal.
+#
+# No image_name is passed: fleet derives the destination from this bundle's own
+# manifest (basename of sandbox.tag under this repo's owner, lowercased). Pass
+# image_name only to target a non-GHCR registry (e.g. ECR).
+#
+# PACKAGE VISIBILITY follows the publishing repo. This repo is PUBLIC, so its
+# package is publicly pullable. Nothing sensitive is in the image (the
+# Containerfile has no COPY/ADD; it is Fedora plus RPMs) and the name discloses
+# nothing.
+name: Publish sandbox image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "sandbox/**"
+  workflow_dispatch:
+
+# A reusable workflow's permissions must be a subset of its caller's, so
+# contents: read is granted for the checkout even though the GHCR push is the
+# point. No repo-write scopes: this workflow does not commit or open PRs.
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    uses: ElcanoTek/fleet/.github/workflows/publish-sandbox-image.yml@main

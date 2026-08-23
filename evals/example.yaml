@@ -1,0 +1,70 @@
+# Example eval set — the template for this bundle's evals/ contract.
+#
+# An eval set is a group of GOLDEN cases: prompts replayed through fleet's
+# governed run loop at a pinned model and scored against expectations, so a
+# model swap or a persona / prompt / manifest edit can be regression-gated on
+# "did my known-good tasks get worse?" before it ships:
+#
+#   fleet eval run example --bundle-path "$PWD"     # exit 0 pass / 1 fail
+#
+# The MODEL is pinned per case (that is what a model-swap eval compares); the
+# persona and system-prompt content deliberately are NOT — they resolve from the
+# live bundle at replay time, so a bundle edit is exactly what the eval detects.
+# Grow real sets from real runs with `fleet eval capture --task <uuid>` /
+# `--conversation <id>`. Every run costs real model spend; there is no cache.
+#
+# ON A CLUSTER: run this from a control-plane pod
+# (`kubectl -n larkspur exec deploy/larkspur -- fleet eval run example`), or
+# locally against a checkout of this bundle. The second case below is the one
+# that catches a broken cluster deployment, because it exercises an in-sandbox
+# bundle read — the thing that works on podman and silently does not work on
+# Kubernetes when the image and the declaration disagree.
+set: example
+description: Template set demonstrating the golden-case format, every scorer kind, and one deployment-shape canary.
+# The gate: the fraction of cases that must pass (absent = 1.0, all of them).
+threshold: 1.0
+# Default model for llm_judge scorers (a scorer's own `model` wins; when both
+# are absent the judge runs on the case's pinned model).
+judge_model: "anthropic/claude-sonnet-4.6"
+cases:
+  - name: arithmetic-sanity
+    prompt: "What is 17 * 23? Reply with just the number."
+    # The pinned model this golden replays at. Change it (or run the set twice
+    # with an edited pin) to compare candidates on identical goldens.
+    model: "anthropic/claude-sonnet-4.6"
+    scorers:
+      - contains: "391"
+
+  - name: in-sandbox-bundle-read
+    # The deployment canary. On the podman path this always passes. On the
+    # Kubernetes path it passes only when the sandbox image bakes protocols/
+    # AND the deployment declares bundle_docs_in_image — which is exactly the
+    # pair that is easy to get half-right and impossible to notice.
+    prompt: >-
+      Using the view_file tool, read protocols/ask-the-runbooks.md and reply
+      with its first heading, verbatim, and nothing else. If view_file errors,
+      reply with the single word UNREADABLE.
+    model: "anthropic/claude-sonnet-4.6"
+    scorers:
+      - contains: "Ask the Runbooks"
+
+  - name: grounded-answer-judged
+    prompt: >-
+      Search the runbook library and tell me, in two sentences, in what order we
+      rotate a service credential. Cite the runbook you used.
+    model: "anthropic/claude-sonnet-4.6"
+    # Optional: pin the bundle persona the case replays under (basename of a
+    # personas/*.yaml file); absent = the server's default persona.
+    persona: "platform-guide"
+    # A reference answer strengthens the judge's grading (optional).
+    expected: >-
+      Issue the new credential first and leave the old one valid, update the
+      secret store and restart consumers, verify them, and revoke the old
+      credential last.
+    scorers:
+      - regex: "(?i)rb-002|rotating a service credential"
+      - llm_judge:
+          rubric: >-
+            Does the answer put revocation LAST and cite a specific runbook?
+            An answer that revokes first, or that cites nothing, fails.
+          min_score: 0.7

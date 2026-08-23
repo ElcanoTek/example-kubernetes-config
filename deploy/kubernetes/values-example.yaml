@@ -1,0 +1,270 @@
+# Helm values overlay for a Larkspur deployment of the fleet chart
+# (fleet `deploy/helm/fleet`, issue #989 / ADR-0049).
+#
+#   helm upgrade --install larkspur /path/to/fleet/deploy/helm/fleet \
+#     --namespace larkspur \
+#     -f deploy/kubernetes/values-example.yaml \
+#     --set image.repository="$REGISTRY/larkspur-fleet"   --set image.tag="$TAG" \
+#     --set sandbox.image="$REGISTRY/larkspur-sandbox:$TAG"
+#
+# Image refs stay on the COMMAND LINE, not in this file: they carry the build
+# tag, which is a commit of this repo, and a values file that pins one is stale
+# the moment anything else here changes. What lives here is every setting that
+# is a real *decision* about how this bundle runs on a cluster.
+#
+# Read docs/KUBERNETES-GETTING-STARTED.md before editing. It explains the three
+# bundle-specific requirements this file encodes and what each one breaks when
+# you skip it. For a laptop/kind cluster use values-kind.yaml instead — it
+# overrides the production-only choices below.
+#
+# Every key below exists in fleet's chart (deploy/helm/fleet/values.yaml).
+# The chart has NO values schema, so Helm silently accepts a misspelled key and
+# renders nothing for it. Verify with:
+#   helm template larkspur /path/to/fleet/deploy/helm/fleet -f this-file ...
+# and read the rendered Deployment env — `make helm-template` does exactly that.
+
+# ── images ──────────────────────────────────────────────────────────────────
+image:
+  # Tags are commit shas — immutable, so a cached layer is the right layer.
+  # If you ever re-push a FIXED build under an existing tag, roll the tag
+  # instead of relying on a pull: nodes that already cached it never refetch.
+  pullPolicy: IfNotPresent
+
+# Pull secret for the control-plane (and optional web) image. Create it in the
+# namespace before installing:
+#   kubectl -n larkspur create secret docker-registry regcred \
+#     --docker-server=ghcr.io --docker-username=<user> --docker-password=<PAT>
+# Delete this block if your registry is public or your nodes authenticate by
+# instance role (ECR on EKS, Artifact Registry with Workload Identity).
+imagePullSecrets:
+  - name: regcred
+
+# ── sandbox: one ephemeral pod per turn ─────────────────────────────────────
+sandbox:
+  backend: kubernetes
+  kubernetes:
+    # Same namespace as the control plane. Empty means the release namespace,
+    # which is what you want: the workspace claim is a single RWX PVC and a PVC
+    # cannot be mounted across namespaces. The chart FAILS the render if you
+    # point this elsewhere while workspace.create is true, rather than
+    # producing an install that cannot mount its own workspace.
+    namespace: ""
+    podServiceAccount:
+      create: true
+      name: larkspur-sandbox
+    # Sandbox pods pull the sandbox image themselves, so a private registry
+    # needs the pull secret named here TOO — the control plane's
+    # imagePullSecrets above do not apply to pods it creates.
+    imagePullSecret: regcred
+    # Hypervisor isolation, available here in a way it is not on a single box:
+    # install Kata on the runner nodes, create the RuntimeClass, then name it.
+    # Preflighted fail-closed — a missing RuntimeClass aborts boot.
+    # NOTE FLEET_SANDBOX_RUNTIME (the podman knob) is REFUSED under this
+    # backend, by design. This is its replacement, not an addition.
+    runtimeClass: ""
+    # Node-local Localhost seccomp profile (kubelet-relative path). Empty =
+    # RuntimeDefault. The podman knob FLEET_SANDBOX_SECCOMP_PROFILE is likewise
+    # refused at boot here.
+    seccompProfile: ""
+    # REQUIRED FOR THIS BUNDLE, and only true because
+    # deploy/kubernetes/Containerfile.sandbox bakes protocols/, personas/,
+    # system_prompts/ and skills/ into the sandbox image at the SAME absolute
+    # paths the control plane reads them from (/opt/fleet/client/...).
+    #
+    # Without it fleet drops those fileop read anchors and `view_file
+    # protocols/ask-the-runbooks.md` is REFUSED before the file is even looked
+    # for. Bake without declaring → file tools refused, bash still works.
+    # Declare without baking → reads fail not-found. Both images must come from
+    # the same commit of this repo or the agent reads one release's protocols
+    # while the control plane runs another's.
+    #
+    # This works for skills/ ONLY because manifest.yaml sets
+    # `skills_builtin: false`. With the built-in pack inherited, fleet's skills
+    # dir is a merged tree under the control plane's data PVC and no sandbox
+    # image can carry it.
+    bundleDocsInImage: true
+    # Give the runners their own pool once traffic is more than a trickle:
+    # label + taint the pool, fill both in, and sandbox pods pin there while
+    # the control plane stays on general nodes. This is the horizontal scaling
+    # story — more runner capacity, never a second fleet.
+    nodeSelector: {}
+    #  larkspur.example.com/pool: sandboxes
+    tolerations: []
+    #  - key: larkspur.example.com/sandbox
+    #    operator: Exists
+    #    effect: NoSchedule
+  # Per-sandbox ceilings, in podman-flag format (fleet converts them to pod
+  # resource limits; requests are set equal to limits). The data stack in this
+  # bundle's sandbox image — pandas/numpy/scipy/matplotlib — needs more than
+  # the chart's 512m default just to import.
+  memory: "2g"
+  cpus: "2.0"
+  # Pod ephemeral-storage limit. Caps the writable layer and the scratch
+  # emptyDirs; the workspace PVC is NOT inside it.
+  diskGB: 10
+  # Warm-pool depth. Warm pods hold their requests while parked, so this is a
+  # standing capacity cost — 0 derives it from FLEET_MAX_CONCURRENT_AGENTS.
+  warmSize: 0
+
+# ── storage ─────────────────────────────────────────────────────────────────
+workspace:
+  create: true
+  claimName: fleet-workspace
+  size: 50Gi
+  # MUST be a ReadWriteMany class in production (EFS: efs-sc, GKE:
+  # filestore-*, AKS: azurefile-csi-nfs, on-prem: your NFS/CephFS class).
+  # Leave it empty only if your DEFAULT class is RWX-capable.
+  storageClassName: ""
+  accessModes:
+    - ReadWriteMany
+
+data:
+  # Control-plane only: journals, logs, caches. Sandbox pods never mount it.
+  create: true
+  claimName: fleet-data
+  size: 20Gi
+  storageClassName: ""
+  accessModes:
+    - ReadWriteOnce
+
+# ── egress ──────────────────────────────────────────────────────────────────
+networkPolicies:
+  # The deny-all policy for pods labeled fleet.elcanotek.com/egress=none. The
+  # boot preflight REQUIRES this object to exist; fleet cannot verify your CNI
+  # enforces it. Leave create: true unless you manage an identical policy
+  # yourself, and then set `name` to yours so the preflight finds it.
+  denyAll:
+    create: true
+    name: fleet-sandbox-deny-all
+  # Shape OPEN sandbox egress so a sandbox can reach PyPI but not your
+  # in-cluster Services. Turn this on whenever FLEET_DEFAULT_NETWORK_MODE is
+  # `open`, or whenever any task sets allow_network: an unshaped open sandbox
+  # on a flat pod network can reach the fleet Service, the database, and the
+  # apiserver. That is a real difference from podman, where an open sandbox is
+  # rootless and deliberately has no host-loopback route.
+  #
+  # blockedCIDRs is deliberately LEFT UNSET here rather than set to []. The
+  # chart's default already blocks the cloud instance-metadata range
+  # (169.254.0.0/16), which hands out the NODE's IAM credentials to anything
+  # that can reach it — and an open sandbox runs model-authored,
+  # prompt-injectable code. Writing `blockedCIDRs: []` would silently remove
+  # that. Uncomment and ADD your own ranges beneath the default instead.
+  openEgress:
+    create: false
+    # blockedCIDRs:
+    #   - 169.254.0.0/16     # keep: cloud instance metadata (IMDS), link-local
+    #   - 10.0.0.0/8         # your cluster Pod/Service/node ranges
+    #   - 172.16.0.0/12
+    #   - 192.168.0.0/16
+
+# ── config ──────────────────────────────────────────────────────────────────
+config:
+  # An EXISTING Secret you create before installing (see the guide's "Secrets"
+  # step). It carries OPENROUTER_API_KEY, the two database URLs,
+  # CHAT_SERVER_TOKEN (the shared chat token — the web tier reads only that
+  # spelling and the binary accepts it too, so prefer it over
+  # FLEET_SERVER_TOKEN), and this bundle's one connector credential
+  # (DEPLOY_API_TOKEN). Sandbox pods receive no env and no service-account
+  # token, so nothing in it can reach one.
+  existingSecret: larkspur-secrets
+  # Non-secret env, rendered verbatim into the control-plane container.
+  #
+  # ALWAYS QUOTE THE VALUES. This is YAML 1.1: an unquoted `no` / `off` / `yes`
+  # / `on` becomes "false"/"true", and `1.10` becomes "1.1". A network mode is
+  # safe unquoted; a version number or a boolean-looking flag is not.
+  #
+  # These are `env`, and Kubernetes env beats envFrom — so a key here silently
+  # overrides the same key in the Secret above. Keep secrets out of this block
+  # and non-secrets out of the Secret.
+  env:
+    # REQUIRED under this backend: `allowlisted` is refused at boot (the
+    # host-side egress proxy is unreachable from pods). `lockdown` seals every
+    # sandbox behind the deny-all policy; `open` lets sandboxes reach the
+    # internet and is what you want if agents install packages at runtime.
+    # MCP calls are unaffected either way — they run host-side in the control
+    # plane, which is the whole point of the credential boundary.
+    FLEET_DEFAULT_NETWORK_MODE: lockdown
+    # Sizing knob, not a scaling knob: raise it WITH sandbox node capacity and
+    # the control-plane `resources` below.
+    FLEET_MAX_CONCURRENT_AGENTS: "8"
+    FLEET_TIMEZONE: "UTC"
+    # This bundle's default persona, by FILE BASENAME (personas/assistant.yaml
+    # — the persona displayed as "Rowan"). The control-plane image already
+    # sets it; repeating it here is what lets you switch persona with a
+    # `helm upgrade` instead of an image rebuild.
+    PERSONA_DEFAULT: assistant
+    # ⚠ CHANGE THIS BEFORE YOUR FIRST INSTALL. Comma-separated, re-asserted
+    # idempotently on every boot. Without it a fresh database has ZERO admins
+    # and a chat user is never silently promoted — so /orchestrator tells
+    # everyone to ask an admin and there is no admin to ask. Nothing fails and
+    # nothing warns; the instance just cannot be administered.
+    FLEET_ORCHESTRATOR_BOOTSTRAP_ADMINS: "you@example.com"
+
+# ── databases ───────────────────────────────────────────────────────────────
+postgres:
+  # Managed Postgres (RDS / Cloud SQL / Azure Database) via the two DB URLs in
+  # the Secret above. The chart's in-cluster Postgres is one replica with one
+  # PVC and no backups — an evaluation convenience, not a production database.
+  #
+  # `false` is not just a preference here: with postgres.enabled=true the chart
+  # sets both DB URLs as container `env`, which OVERRIDES the same keys coming
+  # from your Secret via envFrom. Pointing at a managed database therefore
+  # REQUIRES this to be false; leaving it true silently keeps you on the
+  # in-cluster database while your Secret's DSNs sit there unused.
+  enabled: false
+
+# ── exposure ────────────────────────────────────────────────────────────────
+# The optional Next.js web tier is an image you build from fleet's web/ tree;
+# this bundle does not build it. It is the ONLY browser UI — the fleet binary
+# serves an API — so with it off, reach the deployment with
+# `kubectl port-forward` until you have that image and a TLS story.
+#
+# When you turn it on, give it its OWN Secret (`web.existingSecret`) holding
+# exactly what it reads — the shared chat token and a session secret — rather
+# than reusing config.existingSecret. That one carries OPENROUTER_API_KEY and
+# both database DSNs, which the web tier never reads, and the web pod is the
+# one behind the Ingress.
+# ── exposure ────────────────────────────────────────────────────────────────
+# READ THIS BEFORE YOU DECIDE THE INSTALL WORKED. The fleet binary serves an
+# API only — chat on 8080, orchestrator on 8000. The user interface (/chat,
+# /orchestrator, /settings, /admin) is fleet's Next.js app, and the chart ships
+# it ONLY when web.enabled is true.
+#
+# Left false, every pod goes Ready, every verification step in the guide
+# passes, and nobody can open the product. That is a real failure mode, not a
+# hypothetical: it is what our first Kubernetes customer's bundle shipped with.
+#
+# It defaults to false HERE because the web image is fleet's, not this
+# bundle's — you build it from fleet's web/ at the same commit as your
+# control-plane image. Flip it on and set web.image as soon as you have one;
+# until then reach the API with `kubectl port-forward`.
+web:
+  enabled: false
+  image: ""
+  # The web tier's OWN secret when you enable it: CHAT_SERVER_TOKEN (the same
+  # value the control plane has) and APP_SESSION_SECRET — the app throws at
+  # startup without either. Deliberately NOT config.existingSecret: that one
+  # carries OPENROUTER_API_KEY and the database URLs, which this tier never
+  # reads, and it is the pod behind the Ingress.
+  existingSecret: ""
+
+service:
+  type: ClusterIP
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: ""
+  tls: []
+
+# ── control plane ───────────────────────────────────────────────────────────
+# ONE replica, forever — the chart enforces it and exposes no replica knob.
+# Size VERTICALLY: this pod runs the agent loop, the scheduler, and every MCP
+# server subprocess this bundle declares.
+resources:
+  requests:
+    cpu: "2"
+    memory: 4Gi
+  limits:
+    memory: 8Gi

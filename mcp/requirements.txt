@@ -1,0 +1,29 @@
+# RUNTIME dependencies for this bundle's MCP servers.
+#
+# THIS FILE IS INSTALLED INTO THE CONTROL-PLANE IMAGE
+# (deploy/kubernetes/Containerfile.control-plane). Keep it runtime-only: test
+# and lint tooling lives in requirements-dev.txt so a production control plane
+# is not carrying a test framework. The split is the reason the Containerfile
+# can install straight from this file and stay correct as the bundle changes —
+# a new runtime dependency needs no Containerfile edit.
+#
+# The corollary: a runtime dependency filed in requirements-dev.txt by mistake
+# produces a control-plane image where that server dies at import. It shows up
+# as a per-server error in the log, not as a boot failure.
+
+# MCP server framework: provides mcp.server.fastmcp.FastMCP, imported by both
+# servers. This is the official Model Context Protocol SDK — NOT the standalone
+# "fastmcp" project, which this code never imports.
+#
+# The <2 ceiling is load-bearing: the mcp 2.0.0 wheel ships mcp/server/ but no
+# mcp/server/fastmcp module, so an unbounded pin resolves to a release on which
+# both servers fail to START with ModuleNotFoundError. Lift it only together
+# with migrating the servers off that import path; the 1.x line stays free to
+# float.
+mcp>=1.28.1,<2
+
+# HTTP client used by the gated release_tracker connector.
+httpx
+
+# YAML reader — the manifest-contract tests parse manifest.yaml.
+pyyaml

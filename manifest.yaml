@@ -1,0 +1,634 @@
+# Larkspur — the Kubernetes-focused example client bundle for the fleet app.
+#
+# fleet ships NO client-specific content. At boot it loads a *bundle* from the
+# FLEET_CLIENT_CONFIG_DIR environment variable; this repo is a complete,
+# generic example bundle you can fork as the starting point for your own — one
+# written for the CLUSTER deployment shape (fleet #989 / ADR-0049) rather than
+# the single-box podman install.
+#
+# It is deliberately NOT about any one industry. "Larkspur" is a fictional
+# company used only to show how white-label branding looks — rename it to
+# yours. The MCP servers, personas, protocols, skills, and cards exist to show
+# the shape; the platform-ops flavor is a generic team type, not a vertical.
+#
+# The full schema for every field below — ServerDef, Branding, Models,
+# EmptyState, Sandbox (including the sandbox.kubernetes block), AgentPolicy,
+# TaskTemplate, PersonaDef, HTTPToolDef, WebhookTriggerDef, ProviderDef,
+# PricingConfig — and the enable-gate / ${VAR} interpolation semantics live in:
+#   internal/clientconfig/clientconfig.go in the fleet repo
+#   (https://github.com/ElcanoTek/fleet)
+# A bundle is this manifest plus the system_prompts/, personas/, protocols/,
+# prompts/, skills/, mcp/, evals/ and sandbox/ directories alongside it.
+#
+# fleet's manifest decoder is STRICT: an unknown or duplicate key fails the
+# load at boot, so a typo'd key can never silently drop a policy — and a field
+# newer than the fleet binary you run fails the whole bundle, which is why some
+# blocks below ship commented with a dated note.
+
+# ── Branding (white-label) ──────────────────────────────────────────────────
+branding:
+  app_name: "Larkspur"
+  login_title: "Welcome back."
+  login_tagline: "Sign in to your workspace and pick up where you left off."
+  share_title: "Larkspur — your team's AI workspace"
+  share_description: "Persistent, multi-turn conversations with real tool use across your files, your data, and the systems your team already runs."
+  # The mark the navigation rail renders on every page: a bundle-relative
+  # .svg/.png/.webp/.jpg/.jpeg/.ico served straight from this bundle, so
+  # changing it is a bundle change plus a restart — no web rebuild.
+  #
+  # SHIPPED COMMENTED (see the note on sandbox.kubernetes below for the same
+  # reasoning): `logo` entered the schema in fleet PR #886 (2026-07-29) and the
+  # decoder is STRICT, so on an older binary an uncommented `logo` fails the
+  # whole bundle load. Check the binary you actually run — grep its
+  # internal/clientconfig/clientconfig.go for `yaml:"logo"` — then uncomment:
+  # logo: "assets/larkspur-mark.svg"
+  #
+  # The OG unfurl card scrapers render when a deployment URL is pasted into
+  # Slack / Teams / Discord. PNG/WebP/JPEG only (SVG and ICO are rejected at
+  # load — no scraper renders them). Same strict-decoder gate, newer: fleet PR
+  # #900.
+  # share_image: "assets/larkspur-share.png"
+  #
+  # UI theme. A deliberately generic slate palette with one restrained blue
+  # accent — swap in your brand colors. Served as a render-blocking stylesheet
+  # so the shell (login included) paints with no flash.
+  #
+  # Every token fleet themes is set, on purpose: fleet's defaults for the
+  # structure/scrim/rail tokens are hand-tinted from FLEET's own primary hue,
+  # not derived from yours, so a bundle that overrides only `primary` keeps
+  # fleet-tinted emphasis borders and rail rows beside its palette.
+  #
+  # Semantic status colors (success / danger / warning) are intentionally NOT
+  # themable — they encode meaning, so a failed tool call reads as failure in
+  # every deployment.
+  #
+  # Values may be hex or rgb()/rgba()/hsl()/hsla(). Anything else, and any
+  # token name fleet does not theme, is dropped at render time and that ONE
+  # token falls back — a typo cannot break the stylesheet.
+  colors:
+    dark:
+      primary: "#7DA2C7"
+      primary_hover: "#A8C4DE"
+      # on_primary is the readable foreground ON a primary fill (buttons,
+      # active segments, the user avatar). fleet defaults it to white, so any
+      # bundle with a LIGHT primary must declare a dark one or primary buttons
+      # render white-on-pale-blue at roughly 1.9:1.
+      on_primary: "#0F172A"
+      secondary: "#64748B"
+      accent: "#CBD5E1"
+      background: "#0B0F16"
+      surface_1: "#141A23"
+      surface_2: "#1D2530"
+      text_primary: "#F8FAFC"
+      text_secondary: "#CBD5E1"
+      text_muted: "#8B98A9"
+      text_disabled: "rgba(203, 213, 225, 0.45)"
+      border: "rgba(255, 255, 255, 0.14)"
+      border_strong: "rgba(255, 255, 255, 0.28)"
+      border_subtle: "rgba(255, 255, 255, 0.08)"
+      overlay_soft: "rgba(0, 0, 0, 0.20)"
+      overlay_strong: "rgba(0, 0, 0, 0.40)"
+      rail_hover: "rgba(255, 255, 255, 0.07)"
+      rail_active: "rgba(255, 255, 255, 0.10)"
+    light:
+      primary: "#2F5A82"
+      primary_hover: "#1E3A56"
+      on_primary: "#FFFFFF"
+      secondary: "#475569"
+      accent: "#1E293B"
+      background: "#F8FAFC"
+      surface_1: "#FFFFFF"
+      surface_2: "#EEF2F6"
+      text_primary: "#0F172A"
+      text_secondary: "#334155"
+      text_muted: "#64748B"
+      text_disabled: "rgba(51, 65, 85, 0.45)"
+      border: "rgba(15, 23, 42, 0.12)"
+      border_strong: "rgba(15, 23, 42, 0.24)"
+      border_subtle: "rgba(15, 23, 42, 0.07)"
+      overlay_soft: "rgba(15, 23, 42, 0.12)"
+      overlay_strong: "rgba(15, 23, 42, 0.32)"
+      rail_hover: "rgba(15, 23, 42, 0.05)"
+      rail_active: "rgba(15, 23, 42, 0.08)"
+
+# ── Model defaults (advisory self-description ONLY) ─────────────────────────
+# HONESTY NOTE: fleet parses this block but does NOT consume it. It is retained
+# so the strict decoder still loads bundles that declare it; it is not a live
+# model-selection knob and never reaches the web UI. What actually picks
+# models: a scheduled task's own `model` field (else CUTLASS_TASK_MODEL, with
+# CUTLASS_TASK_FALLBACK_MODEL as the retry tier), and for chat the picker
+# default compiled into the web app plus fleet's own core/max tier constants.
+# Keep this in sync with what your deployment runs — as reviewer-readable
+# documentation — or delete it. Both are safe.
+models:
+  default_core: "google/gemini-3.5-flash"
+  default_max: "anthropic/claude-sonnet-4.5"
+
+# ── Execution sandbox ───────────────────────────────────────────────────────
+# Every agent tool call (bash, run_python, file I/O) runs inside a sandbox. The
+# SANDBOX is mandatory; the BACKEND is pluggable — rootless podman co-located
+# with the process (the single-box default) or one ephemeral Kubernetes pod per
+# sandbox (this bundle's target shape).
+sandbox:
+  # The base sandbox image definition. Used verbatim by fleet's canonical
+  # scripts/build-sandbox-image.sh on the podman path, and as the FROM of
+  # deploy/kubernetes/Containerfile.sandbox on the cluster path.
+  containerfile: sandbox/Containerfile
+  tag: localhost/larkspur-sandbox:latest
+  # Opt-in prebuilt/registry pull. On the cluster path this is ALWAYS set — by
+  # the Helm chart, as FLEET_SANDBOX_IMAGE — because a pod has no build step
+  # and a `localhost/` tag is not a registry a node can pull from.
+  image: "${FLEET_SANDBOX_IMAGE:-}"
+  # OCI runtime for podman's --runtime. Empty = podman's default. NOTE this
+  # knob (and FLEET_SANDBOX_RUNTIME) is REFUSED at boot under the kubernetes
+  # backend rather than silently ignored; its cluster counterpart is
+  # sandbox.kubernetes.runtime_class / the chart's
+  # sandbox.kubernetes.runtimeClass.
+  runtime: "${FLEET_SANDBOX_RUNTIME:-}"
+
+  # `backend:` is DELIBERATELY NOT SET HERE.
+  #
+  # The backend is a property of the DEPLOYMENT, not of the bundle: this same
+  # bundle runs on a single box under podman and in a cluster under the
+  # kubernetes backend. Pinning `backend: kubernetes` here would make the
+  # bundle refuse to boot on any box (the cluster preflight would run and
+  # fail), and would break `fleet mcp test` on a laptop. The Helm chart sets
+  # FLEET_SANDBOX_BACKEND=kubernetes, and env wins.
+  # backend: kubernetes
+
+  # ── kubernetes backend settings (fleet #989 / ADR-0049) ───────────────────
+  # SHIPPED WITH ONE FIELD SET. Everything else in this block is set by the
+  # Helm chart as FLEET_SANDBOX_K8S_*, and env wins FIELD BY FIELD — so
+  # declaring namespace / workspace_claim / network_policy / service_account /
+  # image_pull_secret / runtime_class here would be dead weight that drifts
+  # from deploy/kubernetes/values-example.yaml. Set them here only if you
+  # deploy WITHOUT the chart.
+  #
+  # DATED NOTE (2026-08-23): the whole `sandbox.kubernetes` block entered the
+  # schema with fleet #989, and `bundle_docs_in_image` with fleet #1251. The
+  # decoder is strict, so on a fleet older than those an uncommented block
+  # fails the ENTIRE bundle load at boot — not just this field. Verify the
+  # binary you run (grep its internal/clientconfig/clientconfig.go for
+  # `yaml:"bundle_docs_in_image"`) before deploying this bundle to an older
+  # fleet, and comment the block out if you must.
+  kubernetes:
+    # Declares that the SANDBOX IMAGE carries this bundle's supporting-doc dirs
+    # (protocols/, personas/, system_prompts/, skills/) at the same absolute
+    # paths the control plane reads them from — which is exactly what
+    # deploy/kubernetes/Containerfile.sandbox bakes in. Without it fleet drops
+    # those fileop read anchors, and `view_file protocols/…` is REFUSED before
+    # the file is even looked for.
+    #
+    # A DECLARATION, NOT A PROBE: fleet cannot inspect an image. A wrong
+    # declaration degrades to a not-found read, never to a widened boundary —
+    # the re-admitted anchors are READ-ONLY, so a turn still cannot rewrite its
+    # own protocols.
+    #
+    # This is set in TWO places on purpose and they must agree: here, and as
+    # `sandbox.kubernetes.bundleDocsInImage: true` in
+    # deploy/kubernetes/values-example.yaml. The chart's env wins; the manifest
+    # value is what keeps a chart-less deployment correct.
+    bundle_docs_in_image: true
+  # Default egress allowlist for NETWORKED sandboxes — consulted only when
+  # FLEET_DEFAULT_NETWORK_MODE=allowlisted, which the kubernetes backend
+  # REFUSES at boot (the host-side egress proxy is unreachable from a pod).
+  # Left here for the podman path; shape cluster egress with NetworkPolicies
+  # (the chart's networkPolicies.openEgress) instead.
+  # network_allowlist:
+  #   - "pypi.org"
+  #   - "files.pythonhosted.org"
+
+# ── MCP server catalog ──────────────────────────────────────────────────────
+# How you connect agents to your data and tools. Each entry declares a
+# subprocess (or HTTP endpoint), an ENABLE GATE over env vars, and the env the
+# subprocess receives — where ${VAR} resolves from the process environment at
+# launch. Credential VALUES never live here, only variable NAMES: fleet brokers
+# the real secret host-side and injects it only when it runs a delegated MCP
+# call, so it never enters the sandbox or the model's context.
+#
+# ON A CLUSTER, "host-side" MEANS THE CONTROL-PLANE POD. These stdio servers
+# are spawned as subprocesses of the fleet process, in the control-plane pod —
+# never in a sandbox pod. That is why deploy/kubernetes/Containerfile.control-
+# plane installs python3 and mcp/requirements.txt, and why sandbox pods get no
+# env, no secret mounts, and no service-account token.
+#
+# Connector entries may also map fleet-owned runtime tokens into an ordinary
+# env contract: ${FLEET_WORKSPACE} is a fleet-provided writable directory
+# (${FLEET_WORKSPACE}/inputs is where a scheduled task's logical inputs are
+# materialized) and ${FLEET_TASK_ID} is the current task UUID. They resolve at
+# spawn time, never from the operator environment.
+mcp_servers:
+  # 1) An ALWAYS-ON server with no credentials — runs the moment fleet boots.
+  #    A small runbook library over a bundled JSON file: the canonical "point
+  #    an agent at your own docs" pattern. Swap mcp/data/runbooks.json for your
+  #    content, or rewrite the server to read your wiki / vector store.
+  - name: runbook_library
+    type: stdio
+    command: python3
+    args: ["mcp/runbook_library.py"]
+    always: true
+    display_name: "Runbook Library"
+    description: "Search and read the team's operational runbooks. No credentials required."
+    env:
+      # Optional override for where the runbook JSON lives. It must be mapped
+      # HERE to work at all: fleet spawns stdio servers with a MINIMAL
+      # environment — PATH/HOME/locale plus exactly this map — so an operator
+      # `export RUNBOOKS_PATH=…` never reaches the server on its own. Unset
+      # resolves to "" and optional_env drops the key, so the server's built-in
+      # mcp/data/runbooks.json default stands.
+      RUNBOOKS_PATH: "${RUNBOOKS_PATH:-}"
+    optional_env:
+      - RUNBOOKS_PATH
+    # The declared canary for `fleet mcp test --deep`: ONE read-only tool call
+    # that proves the server works end to end — here, that the runbook file
+    # actually loaded, one rung past the tools/list handshake. The bundle
+    # author vets the call for side effects ONCE, right here; the probe runner
+    # only ever executes what a manifest declares. Assertions stay minimal
+    # (`contains` on the first text block) because asserting on live content
+    # makes probes flaky.
+    probe:
+      tool: rb_list_categories
+      contains: "category"
+
+  # 2) A CREDENTIAL-GATED server — the host-side broker pattern. It registers
+  #    but stays DARK until DEPLOY_API_TOKEN is set, so a fresh checkout runs
+  #    clean with no secrets. A generic REST connector over a fictional release
+  #    tracker: point DEPLOY_API_BASE_URL at any JSON API and the token is
+  #    brokered host-side.
+  - name: release_tracker
+    type: stdio
+    command: python3
+    args: ["mcp/release_tracker.py"]
+    enabled_env: ["DEPLOY_API_TOKEN"]
+    account_vars: ["DEPLOY_API_TOKEN"]
+    display_name: "Release Tracker"
+    description: "Read deployments and open change requests in the team's release tracker. Gated on DEPLOY_API_TOKEN."
+    env:
+      DEPLOY_API_TOKEN: "${DEPLOY_API_TOKEN}"
+      DEPLOY_API_BASE_URL: "${DEPLOY_API_BASE_URL:-https://releases.example.com/api/v1}"
+      DEPLOY_API_TIMEOUT_SECONDS: "${DEPLOY_API_TIMEOUT_SECONDS}"
+      # ${FLEET_WORKSPACE} is a RESERVED RUNTIME TOKEN, not an operator env
+      # var: fleet substitutes a writable workspace directory at subprocess
+      # launch and DROPS the key entirely on a spawn path with no workspace to
+      # offer, so the server must treat it as optional.
+      #
+      # THIS MATTERS MORE ON A CLUSTER THAN ON A BOX. The control-plane pod's
+      # $HOME is ephemeral and invisible to sandbox pods, so a connector that
+      # writes to ~/something produces artifacts no agent can ever read. The
+      # workspace claim is the ONE filesystem the control plane and every
+      # sandbox pod share, at the same absolute path. Point connector output
+      # here, always.
+      DEPLOY_API_OUTPUT_DIR: "${FLEET_WORKSPACE}/outputs"
+      # Uncomment together with identity_env below (read its note first):
+      # DEPLOY_API_TEAM_ID: "${DEPLOY_API_TEAM_ID}"
+    optional_env:
+      # Keys listed here are dropped from the spawned env when their resolved
+      # value is EMPTY, so the server sees a clean "unset" instead of "" — the
+      # degrade-gracefully pattern for optional configuration.
+      - DEPLOY_API_TIMEOUT_SECONDS
+    # identity_env names env keys that route IDENTITY or MONEY (owner / team /
+    # account ids, seat-routing tokens). fleet refuses a named-account variant
+    # spawn when a listed key still holds its non-empty default value that the
+    # account's <VAR>_<ACCOUNT> overlay did not override — suffixing the token
+    # but not the team id would otherwise act in the default team under the
+    # named account's label. Validated at startup (stdio servers only; every
+    # entry must name a key of this server's env map, so a typo fails the boot
+    # loudly instead of silently guarding nothing). Commented only because this
+    # placeholder connector never reads DEPLOY_API_TEAM_ID.
+    # identity_env: ["DEPLOY_API_TEAM_ID"]
+
+  # 3) An OPTIONAL, opt-in HTTP server — the per-conversation Optional-server
+  #    pattern. `optional: true` keeps a connector out of conversations until a
+  #    user switches it on (Settings → Connections); `enabled_by_default` picks
+  #    the initial toggle state and `beta: true` badges it. fleet connects to
+  #    `url`, and header ${VAR} secrets resolve HOST-SIDE — in the control-plane
+  #    pod — so they never enter the sandbox or the model context. The `tools:`
+  #    allowlist scopes the server to the named tools (absent = every advertised
+  #    tool). Copy-paste ready: uncomment, point `url` at a real MCP endpoint,
+  #    set the token.
+  # - name: ticketing
+  #   type: http
+  #   url: "https://mcp.ticketing.example.com/mcp"
+  #   headers:
+  #     Authorization: "Bearer ${TICKETING_API_TOKEN}"
+  #   enabled_env: ["TICKETING_API_TOKEN"]
+  #   # Any-of gate alternative — enable when EITHER a token OR user+pass is set:
+  #   # enabled_groups: [["TICKETING_API_TOKEN"], ["TICKETING_USER", "TICKETING_PASS"]]
+  #   optional: true
+  #   enabled_by_default: false
+  #   beta: true
+  #   display_name: "Ticketing (beta)"
+  #   description: "Search and update tickets in the team tracker. Opt in per conversation."
+  #   tools: ["ticket_search", "ticket_get", "ticket_update"]
+  #   # Optional TLS hardening (CA pin / mTLS / SPKI pin):
+  #   # tls:
+  #   #   ca_cert: "/etc/fleet/ticketing-ca.pem"
+  #   #   pinned_sha256: "<hex sha-256 of the server's SPKI>"
+
+# ── Inline HTTP tools ───────────────────────────────────────────────────────
+# A lightweight alternative to a full MCP server for simple "call this REST
+# endpoint" tools: name + method + URL + an inline input JSON Schema, no
+# subprocess. The agent sees each as a native tool (mcp__http_<name>). Same
+# credential boundary as mcp_servers — header ${VAR} secrets resolve host-side
+# at call time. {param} tokens in `url` (percent-encoded) and `body_template`
+# (JSON-escaped) come from the model's input; `response_jq` (syntax-checked at
+# load) filters a JSON response before the model sees it; `critical: true` opts
+# the tool into the same audit gate as agent_policy.critical_tools.
+#
+# This bundle ships none. Copy-paste-ready:
+#
+# http_tools:
+#   - name: "get_incident"
+#     description: "Look up an incident by ID and return its title, severity, and status"
+#     method: GET
+#     url: "https://status.example.com/api/incidents/{incident_id}"
+#     headers:
+#       Authorization: "Bearer ${STATUS_API_TOKEN}"
+#       Accept: "application/json"
+#     input_schema:
+#       type: object
+#       properties:
+#         incident_id: { type: string, description: "Incident ID (e.g. INC-123)" }
+#       required: ["incident_id"]
+#     response_jq: "{title, severity, status}"
+
+# ── Inbound webhook triggers ────────────────────────────────────────────────
+# An external system that presents a valid signature to POST /webhooks/{slug}
+# starts a fresh conversation under notify_user, seeded from prompt_template
+# rendered against the request payload, through the SAME governed core as any
+# chat turn. The trigger DEFINITION is bundle-author-trusted; the inbound
+# PAYLOAD is untrusted input and reaches the template only as data. Set exactly
+# ONE of hmac_secret_env (GitHub-style HMAC-SHA256) or token_secret_env (Slack
+# v0 signing secret); the env var names the secret, whose value is read
+# host-side and never enters the sandbox, the model, or the logs.
+#
+# This bundle ships none, so the endpoint rejects every call. Copy-paste-ready:
+#
+# webhook_triggers:
+#   - slug: "deploy-failed"
+#     description: "Triage every failed deployment the release tracker reports"
+#     hmac_secret_env: DEPLOY_WEBHOOK_SECRET
+#     hmac_header: "X-Hub-Signature-256"     # optional; this is the default
+#     persona: "analyst"
+#     prompt_template: |
+#       Deployment {{.payload.deployment.id}} of {{.payload.deployment.service}}
+#       failed in {{.payload.deployment.environment}}.
+#       Search the runbook library for the matching runbook, follow it, and
+#       write a short triage note with what you checked and what you found.
+#     notify_user: "you@example.com"         # required
+
+# ── LLM provider routing ────────────────────────────────────────────────────
+# By default fleet routes every model through OpenRouter (set OPENROUTER_API_KEY
+# and you are done). Declare providers: to route specific slugs natively — for
+# failover, data residency, or to avoid the markup. api_key_env names an env
+# var whose VALUE is read host-side at boot. Precedence per slug: explicit
+# "<provider>/<model>" > first provider listing the slug > first catch-all.
+#
+# This bundle ships none. Copy-paste-ready:
+#
+# providers:
+#   - name: openrouter
+#     type: openrouter
+#     api_key_env: OPENROUTER_API_KEY
+#   - name: anthropic-direct
+#     type: anthropic
+#     api_key_env: ANTHROPIC_API_KEY
+#     models: ["claude-opus-4-8", "claude-sonnet-4-6"]
+#   - name: local
+#     type: ollama
+#     base_url: "http://ollama.llm.svc.cluster.local:11434/v1"
+#     models: ["llama3.2", "qwen2.5-coder"]
+#     context_window_tokens: 32768
+# fallback_providers: ["anthropic-direct", "openrouter"]
+
+# ── Chat empty-state catalog ────────────────────────────────────────────────
+# The quick-start cards on the chat home screen. The Go side passes each card
+# to the browser verbatim as opaque JSON.
+empty_state:
+  cards:
+    - id: "ask-runbooks"
+      section: "Get started"
+      type: "conversation"
+      icon: "book-open"
+      title: "Ask the runbooks"
+      desc: "How do we do X here? Answered from the runbook library, with the runbook cited."
+      cta: "Ask a question"
+      starterPrompt: "Search the runbook library and answer my question, citing the runbook you used. My question: "
+    - id: "analyze-data"
+      section: "Get started"
+      type: "conversation"
+      optionalForm: true
+      icon: "bar-chart"
+      title: "Analyze a dataset"
+      desc: "Attach a CSV and ask questions — I'll run Python in the sandbox to dig in."
+      cta: "Start analysis"
+      starterPrompt: "I'd like to analyze a dataset. Ask me what you need to know, then load it with Python and walk me through what stands out."
+    - id: "summarize"
+      section: "Get started"
+      type: "form"
+      icon: "file-text"
+      title: "Summarize a document"
+      desc: "Paste or attach a document and get a concise, structured summary."
+      cta: "Summarize"
+      fields:
+        - key: "focus"
+          label: "What should the summary focus on?"
+          type: "text"
+          placeholder: "key decisions, action items, risks…"
+      promptTemplate: "Summarize the attached/pasted document."
+    - id: "draft"
+      section: "Get started"
+      type: "form"
+      icon: "edit"
+      title: "Draft something"
+      desc: "A plan, an update, a snippet of code — describe it and I'll draft it."
+      cta: "Draft it"
+      fields:
+        - key: "what"
+          label: "What should I draft?"
+          type: "text"
+          required: true
+          placeholder: "a rollout plan for the new service…"
+      promptTemplate: "Draft the following for me, and ask me anything you need first."
+  protocol_pills: []
+
+# ── Task templates ──────────────────────────────────────────────────────────
+# Pre-filled scheduled-task configurations the Operations Center offers as a
+# starting point. Each `task` block mirrors the EDITABLE subset of the POST
+# /tasks request. Security-/routing-sensitive knobs (mcp_selection,
+# credential_allowlist, loop_config, worktree_config, trigger_type,
+# allow_task_creation) are deliberately NOT templatable, so a shipped template
+# can never widen a task's authority. A prompt may contain {variable}
+# placeholders — the UI prompts for values before applying the template.
+task_templates:
+  - name: "Weekly Platform Report"
+    description: "Run the weekly-platform-report protocol: gather this week's inputs, compute the numbers honestly, write the artifact."
+    icon: "📊"
+    task:
+      prompt: |
+        Run the "weekly-platform-report" protocol: gather this week's inputs
+        from the workspace, compute the metrics honestly in Python, and write
+        the report artifact. Flag anything that needs a human decision.
+      model: "anthropic/claude-sonnet-4.5"
+      persona: "analyst"
+      recurrence: "0 16 * * 5"
+      timezone: "UTC"
+      max_iterations: 25
+      tags: ["weekly", "report"]
+      # SLA hint: a warning at 1.5x and a breach at 2x of this estimate (the
+      # default multipliers; sla_warn_multiplier / sla_fail_multiplier change
+      # them).
+      expected_duration_minutes: 20
+  - name: "Runbook Freshness Check"
+    description: "Scan the runbook library for stale or contradictory runbooks."
+    icon: "📖"
+    task:
+      prompt: >-
+        Search the runbook library for runbooks that look stale, reference
+        tools or processes we no longer run, or contradict each other. List
+        each finding with the runbook title and what needs updating.
+      model: "google/gemini-3.5-flash"
+      fallback_model: "anthropic/claude-sonnet-4.5"
+      max_iterations: 15
+      tags: ["runbooks", "hygiene"]
+  - name: "Incident Timeline"
+    description: "Reconstruct a cited timeline for one incident (see protocols/incident-timeline.md)."
+    icon: "🕰️"
+    task:
+      prompt: 'Run the "incident-timeline" protocol for this incident and write the timeline to the workspace: {incident}'
+      model: "anthropic/claude-sonnet-4.5"
+      persona: "analyst"
+      max_iterations: 30
+      tags: ["incident"]
+
+# ── Agent tool-behavior policy ──────────────────────────────────────────────
+# How fleet governs the tools above. Read-only tools may be dispatched in
+# parallel within one turn; "critical" tools (matched by BARE NAME SUFFIX)
+# require an audit gate before they run. The generic send_email /
+# send_template_email suffixes are always enforced by fleet — list only your
+# own additions here.
+agent_policy:
+  parallel_safe_tools:
+    - mcp_runbook_library_rb_search
+    - mcp_runbook_library_rb_get_runbook
+    - mcp_runbook_library_rb_list_categories
+    - mcp_release_tracker_rt_list_releases
+    - mcp_release_tracker_rt_get_release
+  # `rt_open_change_request` is a WRITE — held behind an audit confirmation.
+  # This is how you make an agent stop and get sign-off before a consequential
+  # action.
+  critical_tools:
+    - open_change_request
+  critical_tool_substitutes: {}
+  # Per-tool approval windows in SECONDS, keyed by the same bare suffix.
+  # Highest-priority layer of the chain (per-tool > per-conversation >
+  # FLEET_APPROVAL_TIMEOUT_SECONDS > 300s default); an approval that times out
+  # is DENIED. Omit the map to use the global default everywhere.
+  critical_tool_timeouts:
+    open_change_request: 600
+
+# ── Governed lifecycle hooks ────────────────────────────────────────────────
+# Bundle-declared commands that run INSIDE the per-turn sandbox at fixed
+# lifecycle points: user_prompt_submit, pre_tool_use, post_tool_use, turn_end.
+# Each gets a bounded, secret-redacted JSON payload on stdin and prints a JSON
+# decision on stdout. Hooks can only observe or NARROW a turn, never widen it.
+#
+# CLUSTER NOTE: hooks run in the SANDBOX, so the hook command must exist in the
+# SANDBOX IMAGE — not the control-plane image. A hook that shells out to `jq`
+# needs jq in sandbox/Containerfile. This bundle ships none.
+#
+# hooks:
+#   version: 1
+#   entries:
+#     - id: "block-secrets-in-bash"
+#       event: pre_tool_use
+#       matcher: "bash"
+#       command: "jq -e '.tool_input | test(\"AWS_SECRET\") | not'"
+#       timeout_seconds: 15
+#       enforce: true     # fail-closed: a match (or a hook crash) blocks the call
+
+# ── Per-persona tool permissions (least-privilege by role) ──────────────────
+# An optional NARROWING gate over which tools each persona may even see. It can
+# only SUBTRACT from what the server/credential gates already permit, never
+# add. `allow` non-empty = default-deny; only `deny` = default-allow with
+# exceptions; deny wins when both match. Patterns match the runtime tool name:
+# `bash`, `mcp:server/tool`, `mcp:server/*`, `prefix/*`, `*`. `name` is the
+# BASENAME of a personas/<name>.yaml file; personas with no entry keep every
+# permitted tool.
+personas:
+  # Kip answers from the runbooks and never needs the release tracker, so Kip
+  # never sees it. Deny-only keeps everything else (bash, run_python, the rb_*
+  # tools) available.
+  - name: platform-guide
+    tool_permissions:
+      deny:
+        - "mcp:release_tracker/*"
+
+# ── Custom model pricing ────────────────────────────────────────────────────
+# Cost accounting normally trusts the USD figure OpenRouter returns per step.
+# On negotiated rates or a private endpoint, declare per-model rates — per
+# MILLION tokens — and fleet prices matching steps locally from token counts,
+# which also makes the cost ceiling reflect real spend. `fallback` covers models
+# NOT listed: "openrouter" (default) or "zero" (fully private deployments).
+#
+# This bundle ships none. Copy-paste-ready:
+#
+# pricing:
+#   fallback: openrouter
+#   overrides:
+#     - model: "anthropic/claude-sonnet-4.5"
+#       input_cost_per_million_tokens: 3.00
+#       output_cost_per_million_tokens: 15.00
+#       cache_read_cost_per_million_tokens: 0.30
+#       cache_write_cost_per_million_tokens: 3.75
+
+# ── Hosted MCP server directory ─────────────────────────────────────────────
+# fleet embeds a curated directory of hosted MCP servers in the binary, and
+# this bundle inherits it. It is a LISTING only: nothing is contacted until a
+# user explicitly connects a server through the per-user remote-MCP OAuth flow
+# on Settings → Connections.
+#
+# Knobs: remote_mcp_catalog_builtin: false (opt out entirely),
+# remote_mcp_catalog_hidden: [name, …] (hide entries; also the kill switch for
+# a dead endpoint), remote_mcp_catalog: [ … ] (bundle-authored entries;
+# same-name entries override built-ins).
+#
+# Community-provenance entries (hosted by identifiable maintainers who are not
+# the service's vendor) are opted IN here — the UI badges them and requires an
+# operator-named consent step before connecting.
+remote_mcp_catalog_community: true
+remote_mcp_catalog: []
+
+# ── Agent Skills ────────────────────────────────────────────────────────────
+# fleet embeds a built-in Agent Skills pack that every bundle inherits
+# alongside its own skills/ dir (a bundle skill with the same name wins).
+#
+# THIS BUNDLE TURNS THE BUILT-IN PACK OFF, and that is a KUBERNETES decision,
+# not a taste one.
+#
+# When the built-in pack is inherited, fleet's skills directory is a MERGED
+# tree materialized under the control plane's data dir
+# ($FLEET_DATA_DIR/skills-merged/<hash>). That path lives on the data PVC,
+# which sandbox pods never mount, and no sandbox image can carry a path derived
+# from a runtime hash. So on the cluster path an inherited pack means every
+# skill is DESCRIPTION-ONLY inside a sandbox: the agent sees each skill's name
+# and description in its prompt roster (read host-side, which still works) but
+# cannot open SKILL.md, cannot open a reference file, and cannot run a bundled
+# script.
+#
+# With skills_builtin: false, skills/ is this bundle's own directory —
+# deploy/kubernetes/Containerfile.sandbox bakes it, bundle_docs_in_image
+# vouches for it, and skills work end to end in a pod.
+#
+# There is NO setting that gives you both fleet's built-in pack and working
+# in-sandbox skill files on this backend. Flipping this back to true also
+# changes the single-box podman install (where both work fine), so make the
+# call deliberately.
+skills_builtin: false
+# skills_hidden: [name, …]   # drop individual skills
+
+# ── Evals ───────────────────────────────────────────────────────────────────
+# Not a manifest key — golden regression sets live in this bundle's evals/
+# directory (one YAML file per set; see evals/example.yaml). Replay and gate
+# them with `fleet eval run <set>`, and grow them from real runs with
+# `fleet eval capture`.

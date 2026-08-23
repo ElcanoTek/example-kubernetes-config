@@ -1,0 +1,10 @@
+# TEST and LINT dependencies. Deliberately NOT installed into the
+# control-plane image — see the header of requirements.txt.
+#
+#   make venv   # installs requirements.txt AND this file
+-r requirements.txt
+
+pytest
+pytest-asyncio
+respx
+ruff

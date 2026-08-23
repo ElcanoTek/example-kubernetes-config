@@ -1,32 +1,40 @@
-# If you prefer the allow list template instead of the deny list, see community template:
-# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
-#
-# Binaries for programs and plugins
-*.exe
-*.exe~
-*.dll
-*.so
-*.dylib
+# ── build artifacts this repo deliberately does not carry ───────────────────
+# The staged fleet control-plane binary. `make fleet-bin FLEET=…` builds it
+# from a fleet checkout into the image build context; this repo never carries
+# an engine binary (see deploy/kubernetes/Containerfile.control-plane).
+/deploy/kubernetes/fleet
 
-# Test binary, built with `go test -c`
-*.test
+# Image build tarballs the kind path writes.
+/deploy/kubernetes/*.tar
 
-# Code coverage profiles and other test artifacts
-*.out
-coverage.*
-*.coverprofile
-profile.cov
+# A local values overlay with your cluster's real names in it. Keep
+# values-example.yaml generic and put your specifics here.
+/deploy/kubernetes/values-local.yaml
 
-# Dependency directories (remove the comment below to include it)
-# vendor/
+# ── python ──────────────────────────────────────────────────────────────────
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
 
-# Go workspace file
-go.work
-go.work.sum
-
-# env file
+# ── secrets: never, under any name ──────────────────────────────────────────
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+kubeconfig
+kubeconfig.*
 
-# Editor/IDE
-# .idea/
-# .vscode/
+# ── editor / OS ─────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

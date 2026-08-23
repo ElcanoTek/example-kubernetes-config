@@ -1,0 +1,24 @@
+name: Release readiness brief
+description: Turn a proposed change into a short, source-grounded go/no-go brief.
+goal: >
+  Assess whether a named change is ready to roll out, grounded in the team's
+  runbooks and in whatever evidence is actually available.
+inputs:
+  required:
+    - The service and the change being proposed
+  optional:
+    - Links or files with test results, prior incidents, or dependency notes
+instructions:
+  - Ask for the service and change if they are not already available.
+  - Read the relevant rollout runbook and follow its criteria rather than
+    inventing your own.
+  - Separate what is verified from what is assumed, and label each.
+  - Say plainly when a criterion cannot be evaluated from the evidence given.
+  - Recommend go, no-go, or go-with-conditions — never "it depends".
+output:
+  sections:
+    - Recommendation
+    - What was verified
+    - What could not be verified
+    - Rollback plan
+    - Conditions or follow-ups

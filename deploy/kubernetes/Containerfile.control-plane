@@ -1,0 +1,128 @@
+# Larkspur's fleet CONTROL-PLANE image for the Kubernetes path
+# (fleet #989 / ADR-0049).
+#
+# BUILD CONTEXT IS THIS REPO'S ROOT, not this directory:
+#
+#   # 1. stage the fleet binary into the context (from a fleet checkout)
+#   cd /path/to/fleet
+#   CGO_ENABLED=0 go build \
+#     -ldflags "-X github.com/ElcanoTek/fleet/internal/version.version=$(cat VERSION)" \
+#     -o /path/to/example-kubernetes-config/deploy/kubernetes/fleet ./cmd/fleet
+#   # 2. build
+#   cd /path/to/example-kubernetes-config
+#   podman build -t REGISTRY/larkspur-fleet:$(git rev-parse --short HEAD) \
+#     -f deploy/kubernetes/Containerfile.control-plane .
+#
+# `make control-plane FLEET=/path/to/fleet` does both. The walkthrough is
+# docs/KUBERNETES-GETTING-STARTED.md §3.
+#
+# WHY THE BINARY IS STAGED RATHER THAN BUILT IN A STAGE HERE: fleet is a
+# separate repository. A `FROM golang … RUN git clone` stage would need
+# registry-time credentials, and pinning a fleet ref in this file would put an
+# ENGINE VERSION into BUNDLE DATA — exactly the coupling the bundle/engine
+# split exists to prevent. You choose the fleet commit; this file consumes the
+# binary you built from it. `deploy/kubernetes/fleet` is gitignored: the build
+# borrows an engine binary, this repo never carries one.
+#
+# WHY THIS FILE EXISTS AT ALL — fleet's generic example control-plane
+# Containerfile (docs/DEPLOYMENT-KUBERNETES.md) installs git + ca-certificates
+# + tzdata. An image built from it boots fleet, serves chat, and reports this
+# bundle's MCP servers DEAD, because they are `python3 mcp/<server>.py` stdio
+# subprocesses the control plane spawns IN-POD (credentials stay host-side,
+# ADR-0003). No python3, no connectors — and it is a per-server error in the
+# log, not a boot failure, so it is easy to miss.
+#
+# The image holds NO credentials. manifest.yaml names variables; the values
+# arrive as pod env from a Secret at deploy time.
+
+FROM registry.fedoraproject.org/fedora-minimal:latest
+
+# git      — fleet's scheduled-run git-worktree isolation
+# tzdata   — FLEET_TIMEZONE
+# python3  — this bundle's MCP servers
+RUN microdnf install -y \
+        --setopt=install_weak_deps=0 \
+        --setopt=tsflags=nodocs \
+        ca-certificates \
+        git \
+        python3 \
+        python3-pip \
+        tzdata \
+    && microdnf clean all \
+    && rm -rf /var/cache/dnf /var/cache/yum /var/log/dnf* /var/log/yum*
+
+# Install the connectors' RUNTIME deps from the bundle's own requirements file
+# rather than a hand-listed subset here. That file carries the load-bearing
+# `mcp>=1.28.1,<2` cap (2.0.0 drops mcp.server.fastmcp and every server dies at
+# import); a second copy of that constraint in this Containerfile is a copy
+# that drifts.
+#
+# requirements.txt is RUNTIME ONLY. pytest/ruff/respx live in
+# mcp/requirements-dev.txt and deliberately do not ship in this image — that
+# split exists precisely so a production control plane is not carrying a test
+# framework. If you add a runtime dependency for a server, it goes in
+# requirements.txt and this image picks it up with no edit here.
+COPY mcp/requirements.txt /tmp/requirements.txt
+RUN python3 -m pip install --no-cache-dir --root-user-action=ignore \
+        -r /tmp/requirements.txt \
+    && rm -f /tmp/requirements.txt
+
+COPY deploy/kubernetes/fleet /usr/local/bin/fleet
+RUN chmod 0755 /usr/local/bin/fleet
+
+# The bundle, baked in — this is FLEET_CLIENT_CONFIG_DIR. Enumerated rather
+# than `COPY . .` so the image carries no .git, no .venv, and no second copy of
+# the staged binary. ADD A LINE HERE WHEN THIS BUNDLE GAINS A DIRECTORY FLEET
+# READS.
+#
+# /opt/fleet/client must stay BYTE-IDENTICAL to the path
+# Containerfile.sandbox bakes the read-only docs at. The workspace symlinks
+# fleet drops (protocols → <bundle>/protocols, …) are ABSOLUTE, and a sandbox
+# pod resolves them against its OWN filesystem.
+COPY manifest.yaml       /opt/fleet/client/manifest.yaml
+COPY mcp/                /opt/fleet/client/mcp/
+COPY personas/           /opt/fleet/client/personas/
+COPY protocols/          /opt/fleet/client/protocols/
+COPY prompts/            /opt/fleet/client/prompts/
+COPY skills/             /opt/fleet/client/skills/
+COPY system_prompts/     /opt/fleet/client/system_prompts/
+COPY evals/              /opt/fleet/client/evals/
+COPY assets/             /opt/fleet/client/assets/
+COPY sandbox/            /opt/fleet/client/sandbox/
+
+# sandbox/ is copied for completeness (fleet reads sandbox.containerfile out of
+# the manifest) even though NOTHING builds an image inside this pod. On the
+# cluster path the sandbox image is built in CI or on your workstation and
+# named by `sandbox.image` / FLEET_SANDBOX_IMAGE, which the chart sets.
+
+# PERSONA_DEFAULT is a FILE BASENAME (fleet reads personas/<value>.yaml);
+# PERSONA is a bundle-relative PATH. Both happen to match fleet's own defaults
+# for this bundle — they are set explicitly so that renaming the default
+# persona file is a one-line change here rather than a silent fallback to a
+# file that no longer exists. The chart's config.env can override
+# PERSONA_DEFAULT without an image rebuild.
+ENV FLEET_CLIENT_CONFIG_DIR=/opt/fleet/client \
+    HOME=/home/fleet \
+    PERSONA_DEFAULT=assistant \
+    PERSONA=personas/assistant.yaml
+
+# The bundle stays root-owned and read-only to the runtime user: the agent loop
+# never writes to it and the MCP servers only read it.
+#
+# $HOME exists so that Path("~/...").expanduser() anywhere in a connector
+# resolves to a writable path instead of raising. It is EPHEMERAL and invisible
+# to sandbox pods — point any connector output directory at the workspace claim
+# instead (this bundle maps DEPLOY_API_OUTPUT_DIR to ${FLEET_WORKSPACE}/outputs
+# in manifest.yaml, which fleet resolves for you).
+#
+# /var/lib/fleet is the mount point for the data PVC (FLEET_DATA_DIR). Creating
+# it here with the right owner means the kubelet does not have to guess.
+RUN mkdir -p /home/fleet /var/lib/fleet \
+    && chown 1000:1000 /home/fleet /var/lib/fleet
+
+# uid 1000, matching the chart's pod securityContext (runAsUser/runAsGroup/
+# fsGroup = 1000). Change one and you must change the other.
+USER 1000
+WORKDIR /opt/fleet/client
+ENTRYPOINT ["/usr/local/bin/fleet"]
+CMD ["serve"]

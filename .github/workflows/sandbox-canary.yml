@@ -1,0 +1,43 @@
+# Sandbox build canary — does this bundle's sandbox/Containerfile still build?
+#
+# Nothing is pushed. This is not the publisher; it builds the image with the
+# canonical scripts/build-sandbox-image.sh and throws it away. Two questions:
+#
+#  1. On a schedule: has `fedora-minimal:latest` drifted out from under us? The
+#     base is unpinned and the file has no COPY/ADD, so the image content
+#     changes with TIME, not with commits. A package renamed or dropped in
+#     Fedora breaks the build.
+#
+#     THIS MATTERS MORE HERE THAN ON A BOX. The single-box install rebuilds the
+#     image on the box at deploy time, so drift surfaces there. On the cluster
+#     path nothing rebuilds anything — the image is as old as its last build —
+#     so this canary is the only thing that tells you the definition still
+#     works before you need it to.
+#
+#  2. On a PR touching sandbox/**: does the edit build? The publisher only fires
+#     on push to main, so without this a Containerfile change is never built
+#     until after it has merged.
+#
+# It does NOT build deploy/kubernetes/Containerfile.sandbox (the derived,
+# docs-baked image): that needs the repo root as its build context and a BASE
+# ref. `make sandbox` is the check for that one, and the deployment-contract
+# tests in mcp/tests/ cover the part of it that is statically checkable.
+name: Sandbox build canary
+
+on:
+  schedule:
+    # Monday, staggered from the other bundles so several ~1.3 GB builds do not
+    # contend for org runners at once.
+    - cron: "45 10 * * 1"
+  pull_request:
+    paths:
+      - "sandbox/**"
+  workflow_dispatch:
+
+# Checkout only — nothing is pushed.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ElcanoTek/fleet/.github/workflows/build-sandbox-image.yml@main

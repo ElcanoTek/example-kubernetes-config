@@ -1,0 +1,35 @@
+# kind cluster definition for the local walkthrough (docs/LOCAL-CLUSTER-KIND.md).
+#
+#   kind create cluster --name larkspur --config deploy/kubernetes/kind-cluster.yaml
+#
+# ONE node, on purpose. The shared workspace claim is the reason: kind's
+# built-in `standard` storage class is ReadWriteOnce, and a one-node cluster is
+# the only place a ReadWriteOnce claim can be mounted by the control plane and
+# by every sandbox pod at the same time. Add a worker node here and sandbox
+# pods start landing elsewhere and hanging on an unmountable volume — which
+# looks like "fleet is slow" and is actually "your storage class is wrong".
+# Production wants a ReadWriteMany class instead; see values-example.yaml.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: larkspur
+nodes:
+  - role: control-plane
+
+# ── making the lockdown seal real (optional) ────────────────────────────────
+# kind's default CNI, kindnet, does NOT implement NetworkPolicy. fleet's boot
+# preflight only checks that the deny-all NetworkPolicy OBJECT exists, so on a
+# stock kind cluster a "sealed" sandbox still reaches the internet and nothing
+# warns you. If you want to exercise the real seal — and you should, at least
+# once, before you trust it in production — uncomment the two lines below,
+# recreate the cluster, and install a policy-enforcing CNI:
+#
+#   networking:
+#     disableDefaultCNI: true
+#
+#   # Calico (the smaller install of the two):
+#   kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.2/manifests/calico.yaml
+#   kubectl -n kube-system rollout status daemonset/calico-node --timeout=5m
+#
+# Then run fleet's seal test from the engine doc's production checklist: a
+# busybox pod carrying the sandbox labels must NOT be able to reach the
+# network. docs/LOCAL-CLUSTER-KIND.md has the exact command.

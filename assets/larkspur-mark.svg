@@ -1,0 +1,10 @@
+<!-- Placeholder brand mark for the fictional company "Larkspur". Referenced by
+     the (commented) branding.logo field in manifest.yaml. Replace it with your
+     own .svg/.png/.webp and update that path. Deliberately abstract: a template
+     must not ship anything resembling a real organisation's mark. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Larkspur">
+  <title>Larkspur</title>
+  <rect width="64" height="64" rx="14" fill="#2F5A82"/>
+  <path d="M32 14c6 6 9 11 9 16s-4 9-9 9-9-4-9-9 3-10 9-16z" fill="#F8FAFC" opacity="0.92"/>
+  <path d="M32 39v11" stroke="#F8FAFC" stroke-width="3.5" stroke-linecap="round" opacity="0.92"/>
+</svg>

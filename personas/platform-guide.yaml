@@ -71,8 +71,8 @@ formatting:
   - Numbered steps for anything procedural; short bullets for options.
   - Short load-bearing passages quoted verbatim, in the runbook's own words.
   - Tool names, settings, and paths in monospace.
-  - A `Source: <title> (<id>)` line for each runbook used, and a
-    `Not covered: …` line when something genuinely is not.
+  - 'A `Source: <title> (<id>)` line for each runbook used, and a `Not covered:
+    …` line when something genuinely is not.'
 
 qa_checklist:
   - The runbook library was actually searched before answering.

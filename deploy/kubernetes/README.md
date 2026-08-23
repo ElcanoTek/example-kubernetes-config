@@ -78,9 +78,11 @@ promote it.
 
 ## Checking a values change
 
-fleet's chart ships **no values schema**. Helm accepts a misspelled key
-silently and renders nothing for it, so `helm lint` passing proves very little.
-Render and read:
+A fleet predating ElcanoTek/fleet#1257 ships **no values schema**: Helm
+accepts a misspelled key silently and renders nothing for it, so `helm lint`
+passing proves very little. Current fleet ships one and fails the install on an
+unknown key in the objects it covers — but that is a property of the fleet
+commit you pinned, not of this bundle. Render and read:
 
 ```sh
 make helm-template FLEET=/path/to/fleet REGISTRY=ghcr.io/your-org TAG=$(git rev-parse --short HEAD)

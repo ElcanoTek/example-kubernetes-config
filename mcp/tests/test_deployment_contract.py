@@ -243,3 +243,42 @@ def test_manifest_does_not_pin_the_sandbox_backend(manifest):
         "manifest.yaml pins sandbox.backend — this bundle would then refuse to boot on any "
         "single box and break `fleet mcp test` locally. Let the chart's env set it."
     )
+
+
+# ── manifest ↔ personas ─────────────────────────────────────────────────────
+
+
+def test_every_persona_file_parses():
+    """A persona that does not parse takes the WHOLE bundle down at boot.
+
+    fleet's loader is strict, and a persona is loaded at startup along with the
+    manifest — so one stray YAML indicator in a bullet is not a degraded
+    persona, it is a control plane that will not serve. Nothing else in this
+    repo reads these files.
+    """
+    for path in sorted((REPO / "personas").glob("*.yaml")):
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+        assert isinstance(loaded, dict), f"{path.name} is not a YAML mapping"
+        assert loaded.get("name"), f"{path.name} has no name:"
+        assert loaded.get("role"), f"{path.name} has no role:"
+
+
+def test_every_persona_named_anywhere_resolves_to_a_file(manifest):
+    """A persona is selected by FILE BASENAME, in three places, checked in none.
+
+    `personas[].name` in the manifest carries the least-privilege tool gate; a
+    task template's `persona:` and an eval case's `persona:` pick who runs. All
+    three are basenames of personas/<name>.yaml. Rename the file and none of
+    them error — the gate simply stops applying and the task quietly runs as the
+    default persona, with more tools than it was meant to see.
+    """
+    named = {entry["name"] for entry in (manifest.get("personas") or [])}
+    named |= {t["task"]["persona"] for t in (manifest.get("task_templates") or []) if t["task"].get("persona")}
+    for eval_set in sorted((REPO / "evals").glob("*.yaml")):
+        doc = yaml.safe_load(eval_set.read_text(encoding="utf-8"))
+        named |= {c["persona"] for c in (doc.get("cases") or []) if c.get("persona")}
+
+    for basename in sorted(named):
+        assert (REPO / "personas" / f"{basename}.yaml").is_file(), (
+            f"persona {basename!r} is named in the bundle but personas/{basename}.yaml does not exist"
+        )

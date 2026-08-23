@@ -98,10 +98,15 @@ So `make helm-template` before opening any PR that touches
 `deploy/kubernetes/values-*.yaml` is the gate, and the PR template asks you to
 paste what you saw.
 
-Read the output; do not just check the exit code. **fleet's chart ships no
-values schema**, so Helm silently accepts a misspelled value key and renders
-nothing for it. A typo in `bundleDocsInImage` is a green `helm lint`, a clean
-install, working chat, and `view_file protocols/…` refused forever.
+Read the output; do not just check the exit code. **On any fleet predating
+ElcanoTek/fleet#1257 the chart ships no values schema**, and Helm then silently
+accepts a misspelled value key and renders nothing for it — a typo in
+`bundleDocsInImage` is a green `helm lint`, a clean install, working chat, and
+`view_file protocols/…` refused forever. Current
+fleet ships `deploy/helm/fleet/values.schema.json`, which turns that class of
+typo into a failed install. Do not rely on it: it is a property of the fleet
+commit you pinned in step 2, not of this bundle, and it only closes the keys
+the schema names. Render and read the output anyway.
 
 ## Two deployment shapes, and this repo is aimed at the second
 

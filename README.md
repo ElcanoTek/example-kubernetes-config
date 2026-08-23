@@ -329,8 +329,9 @@ from real runs with `fleet eval capture --task <uuid>`.
    `deploy/kubernetes/values-example.yaml`: the RWX storage class, the pull
    secret (or delete it), the network mode. Then
    `make helm-template FLEET=…` and read the rendered env block — fleet's chart
-   ships no values schema, so a misspelled key renders nothing and Helm never
-   complains.
+   only gained a values schema in ElcanoTek/fleet#1257 — before that a
+   misspelled key rendered nothing and Helm never complained, and even now the
+   schema is a property of the fleet commit you pinned, not of this bundle.
 9. **Capture goldens and gate regressions.** `fleet eval capture` a good run
    into `evals/<set>.yaml`, then `fleet eval run <set>` in CI.
 

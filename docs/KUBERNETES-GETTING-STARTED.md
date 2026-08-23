@@ -254,9 +254,12 @@ and change the four things that are yours:
 Leave `sandbox.kubernetes.bundleDocsInImage: true` alone unless you stopped
 using `Containerfile.sandbox`. Step 8 tests it.
 
-Then render before you install. The chart ships **no values schema**, so Helm
-accepts a misspelled key silently and renders nothing for it — reading the
-output is the check:
+Then render before you install. A fleet predating ElcanoTek/fleet#1257 ships
+**no values schema**, so Helm accepts a misspelled key silently and renders
+nothing for it; current fleet ships one and rejects unknown keys in the objects
+it covers. Either way the schema belongs to the fleet commit you picked in
+step 2, not to this bundle — so reading the rendered output is still the
+check:
 
 ```sh
 make helm-template FLEET="$FLEET" REGISTRY="$REGISTRY" TAG="$TAG"
@@ -461,7 +464,7 @@ smoke test and wrong for people.
 | `fleet update` | rebuild **both** images from the new commit, `helm upgrade`. Strategy `Recreate` means a brief full stop, not a rolling overlap — that is the single-owner scheduler invariant, not an oversight. |
 | on-box sandbox rebuild | `make sandbox && make push`, then `helm upgrade` with the new tag. Nothing rebuilds an image on a cluster. |
 | `fleet-backup.timer` | managed-database snapshots (recommended), or a CronJob running `fleet backup --db=all --prune` off the control-plane image |
-| `fleet-maintenance.timer` | a CronJob running `fleet cleanup` daily |
+| `fleet-maintenance.timer` | **nothing to schedule.** `fleet cleanup` prunes dangling *podman* image layers and Go build caches; a control-plane pod has neither, so the job would print two disk lines and exit. Node-local image GC is the kubelet's. fleet's own hourly maintenance loop — reclamation, disk backpressure, stuck-task backstops — runs *inside* the control plane on both deployment shapes |
 | `.env` on the box | the `larkspur-secrets` Secret plus `config.env` in the values file |
 | `journalctl -u fleet` | `kubectl -n larkspur logs deploy/larkspur` |
 | `fleet timers install` | not applicable — systemd tooling |

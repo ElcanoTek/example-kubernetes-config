@@ -53,6 +53,9 @@ sandbox:
   diskGB: 5
   # DEGRADED #1: no warm pool. Every turn pays a cold pod start (schedule +
   # exec of the bridge upload). Fine for a walkthrough, wrong for production.
+  # Needs a fleet that understands warmSize: 0 (ElcanoTek/fleet#1288); older
+  # fleet treated 0 as "derive from the concurrency cap" and silently ran a
+  # two-pod warm pool despite this comment.
   warmSize: 0
 
 # ── storage ─────────────────────────────────────────────────────────────────
@@ -80,13 +83,14 @@ data:
 # ── egress ──────────────────────────────────────────────────────────────────
 networkPolicies:
   # DEGRADED #3: this object MUST exist — fleet's boot preflight refuses to
-  # start without it — but kind's default CNI (kindnet) does NOT implement
-  # NetworkPolicy. So the object is there, the preflight passes, and a
-  # "sealed" sandbox can still reach the internet. That is not a fleet bug and
-  # it is not a kind bug; it is the honest limit of expressing a seal as a
-  # policy object. To make the seal real on kind, create the cluster with
-  # `disableDefaultCNI: true` and install Calico or Cilium
-  # (docs/LOCAL-CLUSTER-KIND.md shows both).
+  # start without it — but whether it is ENFORCED is the CNI's business, and
+  # fleet cannot tell the difference: the object is there, the preflight
+  # passes, and on a non-enforcing CNI a "sealed" sandbox still reaches the
+  # internet. kind's default CNI (kindnet) enforces NetworkPolicy on recent
+  # kind releases (kindnet >= v1.3.0; verified on kind v0.32.0) and silently
+  # does not on older ones. Run the seal test in docs/LOCAL-CLUSTER-KIND.md
+  # ("Verifying the seal on kind") to learn which cluster you have; on an old
+  # kind, upgrade or install Calico/Cilium (same doc).
   denyAll:
     create: true
     name: fleet-sandbox-deny-all
@@ -103,9 +107,11 @@ config:
   # not belong in this Secret on the kind path.
   existingSecret: larkspur-secrets
   env:
-    # `open` rather than `lockdown` on purpose: kindnet does not enforce the
-    # deny-all policy anyway, and `open` at least does not claim a seal it is
-    # not delivering. `allowlisted` is refused at boot under this backend.
+    # `open` rather than `lockdown` on purpose: whether kindnet enforces the
+    # deny-all policy depends on the kind version (see DEGRADED #3), and
+    # `open` never claims a seal the cluster may not deliver. Once the seal
+    # test proves enforcement on YOUR cluster, flip this to `lockdown`.
+    # `allowlisted` is refused at boot under this backend.
     FLEET_DEFAULT_NETWORK_MODE: open
     FLEET_MAX_CONCURRENT_AGENTS: "2"
     FLEET_TIMEZONE: "UTC"

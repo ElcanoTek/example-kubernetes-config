@@ -103,8 +103,11 @@ sandbox:
   # emptyDirs; the workspace PVC is NOT inside it.
   diskGB: 10
   # Warm-pool depth. Warm pods hold their requests while parked, so this is a
-  # standing capacity cost — 0 derives it from FLEET_MAX_CONCURRENT_AGENTS.
-  warmSize: 0
+  # standing capacity cost. Leave it unset to derive from
+  # FLEET_MAX_CONCURRENT_AGENTS (clamped 2..8); set a number to pin it, or 0
+  # for no warm pool at all (0 needs a fleet with ElcanoTek/fleet#1288 —
+  # older fleet treated 0 as "derive").
+  # warmSize: 2
 
 # ── storage ─────────────────────────────────────────────────────────────────
 workspace:

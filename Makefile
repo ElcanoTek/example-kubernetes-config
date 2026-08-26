@@ -98,14 +98,14 @@ push: ## push both images to $REGISTRY
 helm-lint: ## lint fleet's chart against the production overlay
 	$(call need_fleet)
 	helm lint "$(CHART)" -f deploy/kubernetes/values-example.yaml \
-	  --set image.repository="$(REGISTRY)/larkspur-fleet" --set image.tag="$(TAG)" \
+	  --set image.repository="$(REGISTRY)/larkspur-fleet" --set-string image.tag="$(TAG)" \
 	  --set sandbox.image="$(SB_IMAGE)"
 
 .PHONY: helm-template
 helm-template: helm-lint ## render the chart and print the control-plane env block
 	helm template "$(RELEASE)" "$(CHART)" --namespace "$(NAMESPACE)" \
 	  -f deploy/kubernetes/values-example.yaml \
-	  --set image.repository="$(REGISTRY)/larkspur-fleet" --set image.tag="$(TAG)" \
+	  --set image.repository="$(REGISTRY)/larkspur-fleet" --set-string image.tag="$(TAG)" \
 	  --set sandbox.image="$(SB_IMAGE)" \
 	  | sed -n '/^          env:/,/^          envFrom:/p'
 
@@ -115,7 +115,7 @@ install: ## helm upgrade --install with the production overlay
 	helm upgrade --install "$(RELEASE)" "$(CHART)" \
 	  --namespace "$(NAMESPACE)" --create-namespace \
 	  -f deploy/kubernetes/values-example.yaml \
-	  --set image.repository="$(REGISTRY)/larkspur-fleet" --set image.tag="$(TAG)" \
+	  --set image.repository="$(REGISTRY)/larkspur-fleet" --set-string image.tag="$(TAG)" \
 	  --set sandbox.image="$(SB_IMAGE)"
 
 # ── kind ────────────────────────────────────────────────────────────────────
@@ -137,7 +137,7 @@ kind-install: ## helm install into kind with the evaluation overlay
 	helm upgrade --install "$(RELEASE)" "$(CHART)" \
 	  --namespace "$(NAMESPACE)" --create-namespace \
 	  -f deploy/kubernetes/values-kind.yaml \
-	  --set image.repository=localhost/larkspur-fleet --set image.tag="$(TAG)" \
+	  --set image.repository=localhost/larkspur-fleet --set-string image.tag="$(TAG)" \
 	  --set sandbox.image="localhost/larkspur-sandbox:$(TAG)"
 
 .PHONY: kind-down

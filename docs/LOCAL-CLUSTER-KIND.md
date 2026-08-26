@@ -25,17 +25,20 @@ is fine and expensive when you promote it. They are all encoded in
 [`deploy/kubernetes/values-kind.yaml`](../deploy/kubernetes/values-kind.yaml),
 with the same comments, so the file and this page cannot drift.
 
-1. **The lockdown seal depends on your kind version.** fleet's preflight only
-   requires the deny-all NetworkPolicy *object* to exist; whether it is
-   *enforced* is the CNI's business. kind's default CNI, `kindnet`, gained
-   NetworkPolicy enforcement (kindnet ≥ v1.3.0, bundled in recent kind
-   releases — verified here on kind v0.32.0 / K8s v1.36.1: a sealed-label pod
-   was blocked while a control pod got through). On older kind, the object
-   exists, the preflight passes, and a "sealed" sandbox still reaches the
-   internet. `values-kind.yaml` ships `FLEET_DEFAULT_NETWORK_MODE: open` so
-   the overlay never *claims* a seal your kind may not deliver — run the seal
-   test in "Verifying the seal" below, and if it blocks, flip to `lockdown`
-   with confidence.
+1. **The lockdown seal depends on your CNI, so test it — never assume it.**
+   fleet's preflight only requires the deny-all NetworkPolicy *object* to
+   exist; whether it is *enforced* is the CNI's business, and fleet cannot
+   tell the difference. kind's bundled `kindnetd` did **not** enforce
+   NetworkPolicy in this validation (kindnetd v20260528, kind v0.32.0 /
+   K8s v1.36.1: a sealed-label pod fetched an external page with the deny-all
+   object in place); the standalone `aojea/kindnet` ≥ v1.3.0, Calico and
+   Cilium do enforce. Beware the measurement trap that produced a false
+   "sealed" reading during this doc's own validation: busybox `wget` has no
+   TLS, so an `https://` test URL fails on an *unsealed* cluster too — always
+   test with `http://` and always run the unlabeled control. `values-kind.yaml`
+   ships `FLEET_DEFAULT_NETWORK_MODE: open` so the overlay never *claims* a
+   seal your CNI may not deliver — run the seal test in "Verifying the seal"
+   below, and flip to `lockdown` only after it blocks.
 2. **The workspace claim is ReadWriteOnce.** kind's `standard` class (the
    local-path provisioner) offers nothing else. It works only because a
    one-node cluster puts the control plane and every sandbox pod on the same
@@ -228,8 +231,10 @@ The fourth proof is the seal test. Which brings us to:
 ## Verifying the seal on kind
 
 Worth doing once, before you trust `lockdown` anywhere. First find out what
-your kindnet does — recent kind releases (kindnet ≥ v1.3.0; verified on kind
-v0.32.0) enforce NetworkPolicy, older ones silently pass traffic:
+your CNI does. Do not trust folklore about which versions enforce — this
+doc's own validation first concluded the seal was real from an `https://`
+test (busybox TLS failure mimicking a block) and was refuted by the exact
+commands below on a fresh cluster:
 
 ```sh
 # http, not https: busybox wget has no TLS, so an https URL fails for TLS
@@ -239,15 +244,16 @@ kubectl -n "$NS" run seal-test --restart=Never --rm -it \
   --image=busybox -- wget -T 5 -q -O- http://example.com && echo "NOT SEALED"
 ```
 
-If that times out, your kindnet enforces the deny-all policy: the seal is
+If that times out **and** the control run — the same command **without** the
+labels — prints the page, your CNI enforces the deny-all policy: the seal is
 real, and you can set `FLEET_DEFAULT_NETWORK_MODE: lockdown` in
-`values-kind.yaml` and redo step 5. Run a control too — the same command
-**without** the labels should print the page, proving the block is the policy
-and not the cluster's network being broken.
+`values-kind.yaml` and redo step 5. Both halves are required: the sealed run
+alone cannot distinguish a policy block from a broken network or a TLS-less
+client.
 
-If it prints the page and `NOT SEALED`, your kindnet predates enforcement.
-Either upgrade kind, or recreate the cluster without kindnet and install a
-policy-enforcing CNI:
+If the sealed run prints the page and `NOT SEALED` — which is what kind's
+bundled kindnetd does as of v20260528 — recreate the cluster without kindnet
+and install a policy-enforcing CNI:
 
 ```sh
 make kind-down
@@ -297,6 +303,6 @@ That takes the PVCs with it — unlike the production teardown, where the chart'
 | Sandbox pod `Pending`, "pod has unbound immediate PersistentVolumeClaims" | you added a worker node. Caveat 2. |
 | Everything is slow | no warm pool (caveat 4) plus a cold Python import on every first `run_python`. Both are real on kind and both are configurable in production. |
 | `kind load image-archive` fails on a 1.3 GB tar | disk pressure in the container runtime's VM. `podman system prune` / raise the VM disk. |
-| The seal test passes traffic | old kindnet (pre-NetworkPolicy) — upgrade kind or install Calico. And check the test URL: busybox wget cannot do TLS, so `https://` fakes a sealed result; test with `http://`. See above. |
+| The seal test passes traffic | kind's bundled kindnetd does not enforce NetworkPolicy (observed on v20260528 / kind v0.32.0) — install Calico or Cilium (see above). If it *times out* but you tested `https://`, that is the opposite trap: busybox wget cannot do TLS, so https fakes a **sealed** result on an unsealed cluster; test with `http://` and run the control. |
 | `kubectl cp` to the control-plane pod fails | the image ships no `tar`, which `kubectl cp` requires. Stream instead: `kubectl -n larkspur exec -i deploy/larkspur -- sh -c 'cat > /tmp/file' < file`. |
 | The whole cluster is gone after a host reboot | the kind "node" is just a container. `podman start larkspur-control-plane` (or `docker start`) brings it back; pods restart on their own. |

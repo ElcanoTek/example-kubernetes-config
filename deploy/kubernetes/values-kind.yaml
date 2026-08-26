@@ -86,11 +86,12 @@ networkPolicies:
   # start without it — but whether it is ENFORCED is the CNI's business, and
   # fleet cannot tell the difference: the object is there, the preflight
   # passes, and on a non-enforcing CNI a "sealed" sandbox still reaches the
-  # internet. kind's default CNI (kindnet) enforces NetworkPolicy on recent
-  # kind releases (kindnet >= v1.3.0; verified on kind v0.32.0) and silently
-  # does not on older ones. Run the seal test in docs/LOCAL-CLUSTER-KIND.md
-  # ("Verifying the seal on kind") to learn which cluster you have; on an old
-  # kind, upgrade or install Calico/Cilium (same doc).
+  # internet. kind's bundled kindnetd does NOT enforce NetworkPolicy (verified
+  # on kindnetd v20260528 / kind v0.32.0: a sealed-label pod fetched an
+  # external page with this object in place); Calico and Cilium do. Run the
+  # seal test in docs/LOCAL-CLUSTER-KIND.md ("Verifying the seal on kind") —
+  # sealed run AND unlabeled control, http not https — and install a
+  # policy-enforcing CNI (same doc) before trusting lockdown.
   denyAll:
     create: true
     name: fleet-sandbox-deny-all
@@ -107,11 +108,11 @@ config:
   # not belong in this Secret on the kind path.
   existingSecret: larkspur-secrets
   env:
-    # `open` rather than `lockdown` on purpose: whether kindnet enforces the
-    # deny-all policy depends on the kind version (see DEGRADED #3), and
-    # `open` never claims a seal the cluster may not deliver. Once the seal
-    # test proves enforcement on YOUR cluster, flip this to `lockdown`.
-    # `allowlisted` is refused at boot under this backend.
+    # `open` rather than `lockdown` on purpose: kind's bundled kindnetd does
+    # not enforce the deny-all policy (see DEGRADED #3), and `open` never
+    # claims a seal the cluster is not delivering. Once the seal test proves
+    # enforcement on YOUR cluster (e.g. after installing Calico), flip this
+    # to `lockdown`. `allowlisted` is refused at boot under this backend.
     FLEET_DEFAULT_NETWORK_MODE: open
     FLEET_MAX_CONCURRENT_AGENTS: "2"
     FLEET_TIMEZONE: "UTC"

@@ -395,11 +395,18 @@ kubectl -n "$NS" exec -it deploy/larkspur -- \
 ```
 
 A `fleet-sandbox-<hex>` pod should appear in the watch, go `Running`, and be
-deleted when the run ends. The answer should contain `42` **and** the protocol
-heading read with `view_file` — no fallback. A fallback to `cat` means the
-image bakes the docs but the declaration did not land (step 5); a "not found"
-from both means the declaration landed but the image does not carry them (step
-3c).
+deleted when the run ends. The answer should contain `42`. The `view_file`
+leg currently fails under `fleet task run` on **every** backend — an engine
+path-policy gap in the one-shot harness (ElcanoTek/fleet#1290), not a
+declaration or image problem: the same read works in a real chat turn, which
+is the serve path this deployment actually runs. Prove the docs side there
+instead — drive one chat turn (`fleet chat --no-tui --email … --model … 
+--message "Read protocols/ask-the-runbooks.md with view_file and quote its
+first heading"`) and expect the heading with **no fallback**. In a chat turn,
+a fallback to `cat` means the declaration did not land (step 5); a "not
+found" means the declaration landed but the image does not carry the docs
+(step 3c). Once fleet#1290 is fixed, the same diagnosis applies to the smoke
+task as written.
 
 ### 8d. The lockdown seal is real
 
@@ -408,15 +415,22 @@ nobody runs, and it is the one that finds out your CNI is not enforcing
 anything:
 
 ```sh
+# http, not https: busybox wget has no TLS, so an https URL fails for TLS
+# reasons even on an UNSEALED cluster and fakes a passing seal test.
 kubectl -n "$NS" run seal-test --restart=Never --rm -it \
   --labels=app.kubernetes.io/name=fleet-sandbox,fleet.elcanotek.com/egress=none \
-  --image=busybox -- wget -T 5 -q -O- https://example.com && echo "NOT SEALED"
+  --image=busybox -- wget -T 5 -q -O- http://example.com && echo "NOT SEALED"
 ```
 
-A CNI that enforces the policy times that request out. If you see page content
-and `NOT SEALED`, the deny-all NetworkPolicy object exists (fleet checked) and
-means nothing (your CNI ignored it). Fix the CNI or stop calling those turns
-sealed.
+Run the control too — the same command **without** the labels must print the
+page, or the "sealed" result is telling you about a broken network, not an
+enforced policy.
+
+A CNI that enforces the policy times the labeled request out. If you see page
+content and `NOT SEALED`, the deny-all NetworkPolicy object exists (fleet
+checked) and means nothing (your CNI ignored it) — kind's bundled kindnetd
+does exactly this; k3s's embedded policy controller enforces. Fix the CNI or
+stop calling those turns sealed.
 
 ---
 

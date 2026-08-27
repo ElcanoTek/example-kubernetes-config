@@ -589,6 +589,19 @@ Measured, not guessed. fleet's own list plus the parts specific to this bundle.
 
 ## 13. Troubleshooting
 
+Two more, observed on the fleet#1264 validation clusters:
+
+- **`OpenRouter /models fetch failed … network is unreachable` in the logs,
+  yet turns work.** The control-plane pod resolved an IPv6 address first on a
+  cluster with no IPv6 egress; the fetch falls back to the cached catalog and
+  completions go out over IPv4. Cosmetic.
+- **`fleet task run` times out taking a sandbox on a small node.** The
+  one-shot harness builds its own warm pool from `FLEET_SANDBOX_WARM_SIZE`,
+  *beside* the server's — on a tight node that transient double-reservation
+  can make the turn's own pod unschedulable. Prefix the harness with
+  `FLEET_SANDBOX_WARM_SIZE=0`; its warm pods die with the process anyway.
+
+
 | Symptom | Cause |
 | --- | --- |
 | Boot dies with `kubernetes sandbox preflight` | the message names the exact missing piece — an RBAC verb, the claim, the NetworkPolicy, the RuntimeClass. Diff your RBAC against `deploy/helm/fleet/templates/rbac.yaml`. |

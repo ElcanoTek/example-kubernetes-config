@@ -25,13 +25,20 @@ is fine and expensive when you promote it. They are all encoded in
 [`deploy/kubernetes/values-kind.yaml`](../deploy/kubernetes/values-kind.yaml),
 with the same comments, so the file and this page cannot drift.
 
-1. **The lockdown seal is fake.** kind's default CNI, `kindnet`, does not
-   implement NetworkPolicy. fleet's preflight only requires the deny-all
-   NetworkPolicy *object* to exist — it does, the preflight passes, and a
-   "sealed" sandbox still reaches the internet. `values-kind.yaml` therefore
-   sets `FLEET_DEFAULT_NETWORK_MODE: open`, which at least does not claim a
-   seal it is not delivering. To exercise the real thing, see "Making the seal
-   real" below.
+1. **The lockdown seal depends on your CNI, so test it — never assume it.**
+   fleet's preflight only requires the deny-all NetworkPolicy *object* to
+   exist; whether it is *enforced* is the CNI's business, and fleet cannot
+   tell the difference. kind's bundled `kindnetd` did **not** enforce
+   NetworkPolicy in this validation (kindnetd v20260528, kind v0.32.0 /
+   K8s v1.36.1: a sealed-label pod fetched an external page with the deny-all
+   object in place); the standalone `aojea/kindnet` ≥ v1.3.0, Calico and
+   Cilium do enforce. Beware the measurement trap that produced a false
+   "sealed" reading during this doc's own validation: busybox `wget` has no
+   TLS, so an `https://` test URL fails on an *unsealed* cluster too — always
+   test with `http://` and always run the unlabeled control. `values-kind.yaml`
+   ships `FLEET_DEFAULT_NETWORK_MODE: open` so the overlay never *claims* a
+   seal your CNI may not deliver — run the seal test in "Verifying the seal"
+   below, and flip to `lockdown` only after it blocks.
 2. **The workspace claim is ReadWriteOnce.** kind's `standard` class (the
    local-path provisioner) offers nothing else. It works only because a
    one-node cluster puts the control plane and every sandbox pod on the same
@@ -41,7 +48,10 @@ with the same comments, so the file and this page cannot drift.
 3. **The database is the chart's evaluation Postgres.** One replica, one PVC,
    no backups, and a password Helm generates into the `<release>-postgres`
    Secret. Fine for a walkthrough.
-4. **There is no warm pool.** Every turn pays a cold pod start.
+4. **There is no warm pool.** Every turn pays a cold pod start. This needs a
+   fleet that understands `warmSize: 0` (ElcanoTek/fleet#1288); older fleet
+   treated 0 as "derive from the concurrency cap" and silently ran a two-pod
+   Guaranteed-QoS warm pool this file claims not to have.
 
 Everything else — the credential boundary, the RBAC, the read-only rootfs, the
 per-turn pod lifecycle, `bundle_docs_in_image`, the MCP servers running
@@ -51,7 +61,8 @@ host-side in the control-plane pod — is exactly what production does.
 
 ## Prerequisites
 
-`kind`, `kubectl`, `helm`, `podman` or `docker`, Go ≥ 1.27, a checkout of
+`kind`, `kubectl`, `helm`, `podman` or `docker`, Go ≥ 1.27, `openssl` (step 4
+generates a token with it — see the trap noted there), a checkout of
 `ElcanoTek/fleet`, an OpenRouter API key, and roughly 8 GB of memory available
 to your container runtime. The two image builds take most of the time (the
 sandbox image's Python data stack is ~1.3 GB).
@@ -121,6 +132,24 @@ kubectl -n "$NS" create secret generic larkspur-secrets \
   --from-literal=CHAT_SERVER_TOKEN="$(openssl rand -hex 32)"
 ```
 
+Then verify what actually landed — both traps below have bitten:
+
+```sh
+kubectl -n "$NS" get secret larkspur-secrets -o json \
+  | python3 -c 'import json,sys,base64; d=json.load(sys.stdin)["data"]; \
+      [print(k, "len", len(base64.b64decode(v))) for k,v in sorted(d.items())]'
+# OPENROUTER_API_KEY: a real key is `sk-or-v1-` + 64 hex = 73 chars.
+# CHAT_SERVER_TOKEN: 64 chars.
+```
+
+Two traps. If `openssl` is missing, the command substitution prints an error
+**but the secret is still created** — with an empty `CHAT_SERVER_TOKEN`, and
+fleet's boot failure will not point here. And a wrong `OPENROUTER_API_KEY`
+(wrong shell variable, stray quotes) is worse: fleet before
+ElcanoTek/fleet#1289 probed a public endpoint for its `model_api` check, so
+`fleet validate-config` *blessed* a junk key and the first real turn then
+failed with `401 Missing Authentication header`.
+
 ## 5. Install
 
 ```sh
@@ -180,19 +209,52 @@ kubectl -n "$NS" exec -it deploy/larkspur -- \
   fleet task run --workspace /var/lib/fleet/workspace/smoke /tmp/smoke.yaml
 ```
 
-Check (b) and (c) exactly as the production guide describes — a `view_file`
-that falls back to `cat` means the declaration did not land, and a not-found
-from both means the image does not carry the docs.
+Check (b) as the production guide describes. For (c), the part that proves
+the sandbox is the python line printing `42` — pod created, exec'd, deleted.
+The `view_file protocols/…` leg currently fails on **every** backend for
+scheduled/one-shot runs — an engine path-policy gap, not a declaration or
+image problem (ElcanoTek/fleet#1290 tracks it: the task-run harness never
+registers the workspace root, and the scheduled-run file-tool scope has no
+supporting-doc exception). Until that lands, verify the declaration side
+directly instead: the boot log prints
+`bundle_docs_in_image declared: keeping fileop read anchors for 4 bundle doc
+root(s)`, and an absolute-path read from inside a sandbox pod
+(`kubectl exec <sandbox-pod> -- cat /opt/fleet/client/protocols/ask-the-runbooks.md`)
+proves the image carries the docs. Once fleet#1290 is fixed, the production
+guide's original two-outcome diagnosis applies: `view_file` falling back to
+`cat` means the declaration did not land; not-found from both means the image
+does not carry the docs.
 
-The fourth proof, the seal test, is the one kind cannot give you on a stock
-cluster. Which brings us to:
+The fourth proof is the seal test. Which brings us to:
 
 ---
 
-## Making the seal real on kind
+## Verifying the seal on kind
 
-Worth doing once, before you trust `lockdown` anywhere. Recreate the cluster
-without kindnet and install a policy-enforcing CNI:
+Worth doing once, before you trust `lockdown` anywhere. First find out what
+your CNI does. Do not trust folklore about which versions enforce — this
+doc's own validation first concluded the seal was real from an `https://`
+test (busybox TLS failure mimicking a block) and was refuted by the exact
+commands below on a fresh cluster:
+
+```sh
+# http, not https: busybox wget has no TLS, so an https URL fails for TLS
+# reasons even on an UNSEALED cluster and fakes a passing seal test.
+kubectl -n "$NS" run seal-test --restart=Never --rm -it \
+  --labels=app.kubernetes.io/name=fleet-sandbox,fleet.elcanotek.com/egress=none \
+  --image=busybox -- wget -T 5 -q -O- http://example.com && echo "NOT SEALED"
+```
+
+If that times out **and** the control run — the same command **without** the
+labels — prints the page, your CNI enforces the deny-all policy: the seal is
+real, and you can set `FLEET_DEFAULT_NETWORK_MODE: lockdown` in
+`values-kind.yaml` and redo step 5. Both halves are required: the sealed run
+alone cannot distinguish a policy block from a broken network or a TLS-less
+client.
+
+If the sealed run prints the page and `NOT SEALED` — which is what kind's
+bundled kindnetd does as of v20260528 — recreate the cluster without kindnet
+and install a policy-enforcing CNI:
 
 ```sh
 make kind-down
@@ -209,18 +271,14 @@ kubectl -n kube-system rollout status daemonset/calico-node --timeout=5m
 kubectl get nodes    # now Ready
 ```
 
-Set `FLEET_DEFAULT_NETWORK_MODE: lockdown` in `values-kind.yaml`, redo steps
-3–6, and run the seal test:
+Then set `FLEET_DEFAULT_NETWORK_MODE: lockdown` in `values-kind.yaml`, redo
+steps 3–6, and re-run the seal test above — with Calico enforcing, it times
+out.
 
-```sh
-kubectl -n "$NS" run seal-test --restart=Never --rm -it \
-  --labels=app.kubernetes.io/name=fleet-sandbox,fleet.elcanotek.com/egress=none \
-  --image=busybox -- wget -T 5 -q -O- https://example.com && echo "NOT SEALED"
-```
-
-With Calico enforcing, that times out. With kindnet, it prints the page and
-`NOT SEALED`. Seeing both outcomes on the same cluster is the fastest way to
-understand what fleet's preflight does and does not promise.
+Either way, seeing both outcomes — sealed pod blocked, control pod through —
+on the same cluster is the fastest way to understand what fleet's preflight
+does and does not promise: it checks the policy *object* exists; the CNI
+decides whether the policy *acts*.
 
 Pin the Calico version you install; `latest` manifests move.
 
@@ -246,4 +304,6 @@ That takes the PVCs with it — unlike the production teardown, where the chart'
 | Sandbox pod `Pending`, "pod has unbound immediate PersistentVolumeClaims" | you added a worker node. Caveat 2. |
 | Everything is slow | no warm pool (caveat 4) plus a cold Python import on every first `run_python`. Both are real on kind and both are configurable in production. |
 | `kind load image-archive` fails on a 1.3 GB tar | disk pressure in the container runtime's VM. `podman system prune` / raise the VM disk. |
-| The seal test passes traffic | kindnet. See above. |
+| The seal test passes traffic | kind's bundled kindnetd does not enforce NetworkPolicy (observed on v20260528 / kind v0.32.0) — install Calico or Cilium (see above). If it *times out* but you tested `https://`, that is the opposite trap: busybox wget cannot do TLS, so https fakes a **sealed** result on an unsealed cluster; test with `http://` and run the control. |
+| `kubectl cp` to the control-plane pod fails | the image ships no `tar`, which `kubectl cp` requires. Stream instead: `kubectl -n larkspur exec -i deploy/larkspur -- sh -c 'cat > /tmp/file' < file`. |
+| The whole cluster is gone after a host reboot | the kind "node" is just a container. `podman start larkspur-control-plane` (or `docker start`) brings it back; pods restart on their own. |

@@ -89,21 +89,23 @@ push: ## push both images to $REGISTRY
 
 # ── helm ────────────────────────────────────────────────────────────────────
 # CI cannot run these — it has no fleet checkout — so they are the LOCAL gate.
-# A misspelled values key renders nothing and Helm never complains (the chart
-# ships no values schema), which is why `helm-template` prints the env block:
-# reading it is the check.
+# The chart ships a values schema (values.schema.json) that rejects misspelled
+# keys in its fixed-shape objects, but free-form maps (config.env, labels)
+# stay open by design — a typo'd env var there renders fine and fails only at
+# runtime. That is why `helm-template` prints the env block: reading it is
+# the check for the part the schema cannot cover.
 .PHONY: helm-lint
 helm-lint: ## lint fleet's chart against the production overlay
 	$(call need_fleet)
 	helm lint "$(CHART)" -f deploy/kubernetes/values-example.yaml \
-	  --set image.repository="$(REGISTRY)/larkspur-fleet" --set image.tag="$(TAG)" \
+	  --set image.repository="$(REGISTRY)/larkspur-fleet" --set-string image.tag="$(TAG)" \
 	  --set sandbox.image="$(SB_IMAGE)"
 
 .PHONY: helm-template
 helm-template: helm-lint ## render the chart and print the control-plane env block
 	helm template "$(RELEASE)" "$(CHART)" --namespace "$(NAMESPACE)" \
 	  -f deploy/kubernetes/values-example.yaml \
-	  --set image.repository="$(REGISTRY)/larkspur-fleet" --set image.tag="$(TAG)" \
+	  --set image.repository="$(REGISTRY)/larkspur-fleet" --set-string image.tag="$(TAG)" \
 	  --set sandbox.image="$(SB_IMAGE)" \
 	  | sed -n '/^          env:/,/^          envFrom:/p'
 
@@ -113,7 +115,7 @@ install: ## helm upgrade --install with the production overlay
 	helm upgrade --install "$(RELEASE)" "$(CHART)" \
 	  --namespace "$(NAMESPACE)" --create-namespace \
 	  -f deploy/kubernetes/values-example.yaml \
-	  --set image.repository="$(REGISTRY)/larkspur-fleet" --set image.tag="$(TAG)" \
+	  --set image.repository="$(REGISTRY)/larkspur-fleet" --set-string image.tag="$(TAG)" \
 	  --set sandbox.image="$(SB_IMAGE)"
 
 # ── kind ────────────────────────────────────────────────────────────────────
@@ -135,7 +137,7 @@ kind-install: ## helm install into kind with the evaluation overlay
 	helm upgrade --install "$(RELEASE)" "$(CHART)" \
 	  --namespace "$(NAMESPACE)" --create-namespace \
 	  -f deploy/kubernetes/values-kind.yaml \
-	  --set image.repository=localhost/larkspur-fleet --set image.tag="$(TAG)" \
+	  --set image.repository=localhost/larkspur-fleet --set-string image.tag="$(TAG)" \
 	  --set sandbox.image="localhost/larkspur-sandbox:$(TAG)"
 
 .PHONY: kind-down

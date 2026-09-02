@@ -262,6 +262,13 @@ mcp_servers:
     type: stdio
     command: python3
     args: ["mcp/release_tracker.py"]
+    # optional: staying dark without the token is this server's DESIGN (the
+    # comment above), so its absence must not block. Without this flag,
+    # `fleet validate-config` treats an unmet enabled_env gate on a
+    # non-optional server as a BLOCKING failure ("that server would silently
+    # fail to start") and a fresh checkout exits 1 — the opposite of "runs
+    # clean with no secrets".
+    optional: true
     enabled_env: ["DEPLOY_API_TOKEN"]
     account_vars: ["DEPLOY_API_TOKEN"]
     display_name: "Release Tracker"

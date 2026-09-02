@@ -419,18 +419,16 @@ kubectl -n "$NS" exec -it deploy/larkspur -- \
 ```
 
 A `fleet-sandbox-<hex>` pod should appear in the watch, go `Running`, and be
-deleted when the run ends. The answer should contain `42`. The `view_file`
-leg currently fails under `fleet task run` on **every** backend — an engine
-path-policy gap in the one-shot harness (ElcanoTek/fleet#1290), not a
-declaration or image problem: the same read works in a real chat turn, which
-is the serve path this deployment actually runs. Prove the docs side there
-instead — drive one chat turn (`fleet chat --no-tui --email … --model … 
---message "Read protocols/ask-the-runbooks.md with view_file and quote its
-first heading"`) and expect the heading with **no fallback**. In a chat turn,
-a fallback to `cat` means the declaration did not land (step 5); a "not
-found" means the declaration landed but the image does not carry the docs
-(step 3c). Once fleet#1290 is fixed, the same diagnosis applies to the smoke
-task as written.
+deleted when the run ends. The answer should contain `42` **and** the protocol
+heading read with `view_file` — no fallback. A fallback to `cat` means the
+image bakes the docs but the declaration did not land (step 5); a "not found"
+from both means the declaration landed but the image does not carry them (step
+3c). (On a fleet older than ElcanoTek/fleet#1296 the `view_file` leg failed
+under `fleet task run` on every backend — the one-shot harness never
+registered the workspace root — while the same read worked in a chat turn; if
+you pinned such a fleet, prove the docs side with one `fleet chat --no-tui
+--message "Read protocols/ask-the-runbooks.md with view_file …"` turn
+instead.)
 
 The third item proves the **staged skills tree**: the greeting comes from a
 bundle skill's script and the heading from a skill that arrived inside the

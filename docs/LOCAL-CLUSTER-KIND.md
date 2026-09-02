@@ -209,21 +209,20 @@ kubectl -n "$NS" exec -it deploy/larkspur -- \
   fleet task run --workspace /var/lib/fleet/workspace/smoke /tmp/smoke.yaml
 ```
 
-Check (b) as the production guide describes. For (c), the part that proves
-the sandbox is the python line printing `42` — pod created, exec'd, deleted.
-The `view_file protocols/…` leg currently fails on **every** backend for
-scheduled/one-shot runs — an engine path-policy gap, not a declaration or
-image problem (ElcanoTek/fleet#1290 tracks it: the task-run harness never
-registers the workspace root, and the scheduled-run file-tool scope has no
-supporting-doc exception). Until that lands, verify the declaration side
-directly instead: the boot log prints
-`bundle_docs_in_image declared: keeping fileop read anchors for 4 bundle doc
-root(s)`, and an absolute-path read from inside a sandbox pod
+Check (b) and (c) exactly as the production guide describes: `42` proves the
+sandbox (pod created, exec'd, deleted); a `view_file` that falls back to `cat`
+means the declaration did not land, and a not-found from both means the image
+does not carry the docs. Two direct checks of the declaration side are worth
+knowing regardless: the boot log prints
+`bundle_docs_in_image declared: keeping fileop read anchors for 3 bundle doc
+root(s)` (protocols, personas, system_prompts — skills are staged into the
+claim instead, fleet ADR-0055), and an absolute-path read from inside a
+sandbox pod
 (`kubectl exec <sandbox-pod> -- cat /opt/fleet/client/protocols/ask-the-runbooks.md`)
-proves the image carries the docs. Once fleet#1290 is fixed, the production
-guide's original two-outcome diagnosis applies: `view_file` falling back to
-`cat` means the declaration did not land; not-found from both means the image
-does not carry the docs.
+proves the image carries the docs. (On a fleet older than
+ElcanoTek/fleet#1296 the `view_file` leg failed under `fleet task run` on
+every backend — the harness never registered the workspace root — so those
+two checks were the only ones available; that is fixed.)
 
 The fourth proof is the seal test. Which brings us to:
 

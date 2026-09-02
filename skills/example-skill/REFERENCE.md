@@ -14,19 +14,18 @@ it is not in the model's context until the skill is used and the agent opens it.
 ## How fleet finds skills
 
 `clientconfig.ReadSkills` walks the bundle's skills directory at boot and reads
-each `<name>/SKILL.md`. Which directory that *is* depends on `skills_builtin`:
+each `<name>/SKILL.md`. That directory is a **merged tree** fleet materializes
+from three sources, lowest precedence first: fleet's built-in pack (unless
+`skills_builtin: false`; minus `skills_hidden`), each Agent Plugin's `skills/`
+(`plugins/`), and this bundle's own `skills/`. A later source overwrites an
+earlier one, so a bundle skill with a built-in's name wins.
 
-- `skills_builtin: false` (this bundle) — the bundle's own `skills/`.
-- `skills_builtin: true` (fleet's default) — a merged tree of the built-in pack
-  plus the bundle's, materialized under the control plane's data dir. A bundle
-  skill with the same name as a built-in one wins.
-
-`skills_hidden: [name, …]` drops individual entries either way.
-
-The merged tree is why this bundle turns the pack off: it lives on the control
-plane's data PVC, and no sandbox image can carry a path derived from a runtime
-hash. On the single-box podman install both work, because the sandbox
-bind-mounts whatever directory fleet resolved.
+Where that tree lives depends on the sandbox backend. Under podman it sits
+under the control plane's data dir and is bind-mounted into every sandbox.
+Under kubernetes a pod mounts only the workspace claim, so fleet re-stages the
+same tree at `<workspace root>/skills` inside the claim and every pod mounts
+it read-only (fleet ADR-0055). Either way the agent's path is
+`skills/<name>/…`, and this bundle inherits the pack.
 
 ## Validating a skill
 

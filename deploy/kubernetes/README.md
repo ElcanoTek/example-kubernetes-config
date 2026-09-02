@@ -13,8 +13,8 @@ rather than pinning a fleet ref.
 
 | File | What it is | Changes when |
 | --- | --- | --- |
-| `Containerfile.control-plane` | the `fleet` binary + `python3` + `mcp/requirements.txt` + this bundle baked at `/opt/fleet/client`. Build context: the **repo root**. | this bundle gains a directory fleet reads, or the runtime needs a new system package |
-| `Containerfile.sandbox` | the base sandbox image (`../../sandbox/Containerfile`) plus a read-only snapshot of `protocols/`, `personas/`, `system_prompts/`, `skills/` at the same absolute paths. Build context: the **repo root**. | the bundle gains a directory the agent reads *from inside a sandbox* |
+| `Containerfile.control-plane` | the `fleet` binary + `python3` + `mcp/requirements.txt` + this bundle (including `plugins/`) baked at `/opt/fleet/client`. Build context: the **repo root**. | this bundle gains a directory fleet reads, or the runtime needs a new system package |
+| `Containerfile.sandbox` | the base sandbox image (`../../sandbox/Containerfile`) plus a read-only snapshot of `protocols/`, `personas/`, `system_prompts/` at the same absolute paths — **not** `skills/`, which fleet stages into the workspace claim itself (ADR-0055). Build context: the **repo root**. | the bundle gains a directory the agent reads *from inside a sandbox* (other than skills) |
 | `values-example.yaml` | the documented production overlay for fleet's chart | your cluster's storage class, pull secret, network mode, or sizing changes |
 | `values-kind.yaml` | the evaluation overlay for a local kind cluster, with its four degradations named in place | rarely — it exists to be read, not tuned |
 | `kind-cluster.yaml` | a one-node kind cluster (and why one node) | you want the policy-enforcing-CNI variant |
@@ -27,7 +27,11 @@ Both images carry a copy of this bundle:
 - the **control-plane image is authoritative** — manifest, agent policy,
   prompts, the MCP servers that actually run;
 - the **sandbox image carries a read-only snapshot** of the doc dirs, so the
-  agent can read its own protocols from inside a pod.
+  agent can read its own protocols from inside a pod. Skills are not in it:
+  fleet stages the merged skills tree (built-in pack + `plugins/*/skills` +
+  `skills/`) into the workspace claim at boot and mounts it read-only into
+  every pod, so a skill or plugin change invalidates only the control-plane
+  image.
 
 Build them from the **same commit of this repo** and roll them together, or an
 agent reads one release's protocols while the control plane runs another's.

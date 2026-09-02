@@ -12,7 +12,9 @@ catches is silent:
   ``export`` does nothing.
 * A directory the agent reads from inside a sandbox that
   ``Containerfile.sandbox`` does not bake resolves on the single-box podman
-  install and fails only on a cluster.
+  install and fails only on a cluster — except ``skills/``, which fleet stages
+  into the workspace claim itself (ADR-0055) and which must therefore NOT be
+  baked (a baked copy is a snapshot nothing reads).
 * A directory fleet reads at all that ``Containerfile.control-plane`` does not
   copy is simply absent from the control-plane image, because that file
   enumerates its COPY lines rather than using ``COPY . .``.
@@ -26,6 +28,7 @@ AGENTS.md.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -39,9 +42,11 @@ CF_SANDBOX = REPO / "deploy" / "kubernetes" / "Containerfile.sandbox"
 VALUES_PROD = REPO / "deploy" / "kubernetes" / "values-example.yaml"
 VALUES_KIND = REPO / "deploy" / "kubernetes" / "values-kind.yaml"
 
-# Directories the AGENT reads from inside a sandbox. Every one of these must be
-# baked into the sandbox image, or the read fails on the cluster path only.
-SANDBOX_DOC_DIRS = ("protocols", "personas", "system_prompts", "skills")
+# Directories the AGENT reads from inside a sandbox that reach a pod ONLY via
+# the sandbox image. Every one of these must be baked into it, or the read
+# fails on the cluster path only. skills/ is deliberately absent: fleet stages
+# the merged skills tree into the workspace claim at boot (ADR-0055).
+SANDBOX_DOC_DIRS = ("protocols", "personas", "system_prompts")
 
 # Directories FLEET reads out of the bundle at all. Every one must be copied
 # into the control-plane image.
@@ -51,11 +56,14 @@ BUNDLE_DIRS = (
     "protocols",
     "prompts",
     "skills",
+    "plugins",
     "system_prompts",
     "evals",
     "assets",
     "sandbox",
 )
+
+PLUGINS_DIR = REPO / "plugins"
 
 
 @pytest.fixture(scope="module")
@@ -202,22 +210,80 @@ def test_both_images_use_the_same_bundle_path():
         assert f"{root}/{d}/" in cp, f"control-plane image does not place {d}/ under {root}/"
 
 
-def test_skills_builtin_is_off_while_skills_are_baked(manifest):
-    """skills/ can only be baked when the built-in pack is off.
+def test_sandbox_image_does_not_bake_skills(manifest):
+    """skills/ is staged into the workspace claim by fleet, never baked.
 
-    With the pack inherited, fleet's skills dir is a merged tree under the
-    control plane's data PVC — a path no image can carry — so baking skills/
-    and leaving the pack on produces a sandbox where skill files still cannot be
-    read. If someone flips this, they must also drop skills/ from
-    Containerfile.sandbox and update the docs.
+    On the kubernetes backend fleet re-materializes the merged skills tree
+    (built-in pack + plugins/*/skills + skills/) at <workspace root>/skills and
+    mounts it read-only into every pod (fleet ADR-0055). A `COPY skills/` line
+    in Containerfile.sandbox would be a snapshot nothing reads, and its
+    presence would tempt the next reader into believing the image is how skills
+    get there. The pack stays inherited for the same reason: the staged tree is
+    what makes that work on a cluster, and the README says so.
     """
-    baked = "skills" in _copy_sources(CF_SANDBOX)
-    builtin = manifest.get("skills_builtin", True)
-    if baked:
-        assert builtin is False, (
-            "Containerfile.sandbox bakes skills/ but manifest skills_builtin is not false; "
-            "in-sandbox skill reads will not resolve. See README.md."
-        )
+    assert "skills" not in _copy_sources(CF_SANDBOX), (
+        "deploy/kubernetes/Containerfile.sandbox COPYs skills/ — fleet stages skills into the "
+        "workspace claim itself (ADR-0055); drop the line. See README.md 'Skills on Kubernetes'."
+    )
+    assert manifest.get("skills_builtin", True) is True, (
+        "manifest skills_builtin is false, but README.md and the getting-started guide say this "
+        "bundle inherits the built-in pack; change both in the same PR or restore the default"
+    )
+
+
+# ── plugins ─────────────────────────────────────────────────────────────────
+
+
+def _plugin_dirs() -> list[Path]:
+    return sorted(p for p in PLUGINS_DIR.iterdir() if p.is_dir())
+
+
+def test_bundle_ships_at_least_one_plugin():
+    """The example plugin is part of this template's contract, like the skills."""
+    assert _plugin_dirs(), "plugins/ has no plugin directories"
+
+
+def test_every_plugin_has_a_valid_manifest_and_self_contained_servers():
+    """plugin.json + mcp.json parse, and every stdio server script exists in the plugin.
+
+    fleet rejects a plugin whose manifest is invalid and skips a server entry
+    whose ${PLUGIN_ROOT} path does not exist — both as advisories, never as a
+    boot failure — so this is the only place they turn red.
+    """
+    for plugin in _plugin_dirs():
+        manifest = json.loads((plugin / "plugin.json").read_text(encoding="utf-8"))
+        assert manifest["$schema"] == "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", plugin.name
+        assert manifest["name"] == plugin.name, f"{plugin.name}: plugin.json name must equal the folder name"
+        mcp_path = plugin / "mcp.json"
+        if not mcp_path.exists():
+            continue
+        mcp_json = json.loads(mcp_path.read_text(encoding="utf-8"))
+        for server, entry in mcp_json["mcpServers"].items():
+            if entry.get("type") != "stdio":
+                continue
+            for arg in entry.get("args", []):
+                if arg.startswith("${PLUGIN_ROOT}/"):
+                    rel = arg[len("${PLUGIN_ROOT}/") :]
+                    assert (plugin / rel).is_file(), f"{plugin.name}/{server}: {arg} does not exist in the plugin"
+            for key, value in (entry.get("env") or {}).items():
+                assert not value.startswith("${") or value.startswith(("${PLUGIN_ROOT}", "${PLUGIN_DATA}")), (
+                    f"{plugin.name}/{server}.{key}: only PLUGIN_ROOT/PLUGIN_DATA expand in a plugin; "
+                    "a credential belongs in manifest.yaml, not in a plugin"
+                )
+
+
+def test_plugin_servers_need_nothing_the_control_plane_image_lacks():
+    """A plugin server runs in the control-plane pod, so its imports must be
+    satisfied by mcp/requirements.txt — the file Containerfile.control-plane
+    installs. This checks the one import family the example uses."""
+    runtime = (REPO / "mcp" / "requirements.txt").read_text(encoding="utf-8")
+    for plugin in _plugin_dirs():
+        for script in (plugin / "server").glob("*.py") if (plugin / "server").is_dir() else []:
+            source = script.read_text(encoding="utf-8")
+            if "from mcp.server.fastmcp import FastMCP" in source:
+                assert re.search(r"^mcp[>=<]", runtime, re.M), (
+                    f"{script}: imports mcp but requirements.txt does not pin it"
+                )
 
 
 def test_kind_overlay_never_claims_a_seal_kindnet_cannot_enforce():

@@ -47,9 +47,10 @@ Throughout, `<bundle>` is the absolute path to your checkout (e.g.
 3. [Part 2 — persona and system prompt](#part-2--persona-and-system-prompt)
 4. [Part 3 — run a protocol end to end](#part-3--run-a-protocol-end-to-end)
 5. [Part 4 — skills](#part-4--skills)
-6. [Optional — waking `release_tracker`](#optional--waking-release_tracker)
-7. [If you do have a fleet binary](#if-you-do-have-a-fleet-binary)
-8. [What you have and have not proved](#what-you-have-and-have-not-proved)
+6. [Part 5 — the Agent Plugin](#part-5--the-agent-plugin)
+7. [Optional — waking `release_tracker`](#optional--waking-release_tracker)
+8. [If you do have a fleet binary](#if-you-do-have-a-fleet-binary)
+9. [What you have and have not proved](#what-you-have-and-have-not-proved)
 
 ---
 
@@ -417,11 +418,42 @@ profiling in prose.
 > review and not enforced as an authorization boundary. Govern consequential
 > tools through `agent_policy.critical_tools` in the manifest.
 
-This is also where the local path is most misleading about the cluster one: the
-skills here work because your agent reads the filesystem. On Kubernetes they work
-only because `skills_builtin: false` keeps `skills/` this bundle's own directory,
-`Containerfile.sandbox` bakes it, and `bundleDocsInImage` declares it. See
-[`KUBERNETES-GETTING-STARTED.md` §12](KUBERNETES-GETTING-STARTED.md#12-honest-scope--what-a-cluster-deployment-does-not-get).
+The local path and the cluster path agree here more than they do for
+protocols: locally your agent reads `skills/` off the filesystem; on Kubernetes
+fleet stages the merged skills tree (its built-in pack, the plugin's skills,
+this `skills/`) into the workspace claim and every pod mounts it read-only
+(fleet ADR-0055), so the same `skills/<name>/…` paths resolve inside a pod with
+no image bake. What a laptop cannot prove is the staging itself — §8c of the
+getting-started guide does.
+
+---
+
+## Part 5 — the Agent Plugin
+
+`plugins/example-plugin/` is an [Agent Plugin](https://agent-plugins.org): a
+`plugin.json`, one skill (`plugin-quickstart`) and an `mcp.json` declaring a
+stdio server, `server/plugin_notes.py`, that keeps scratch notes under the
+`PLUGIN_DATA` directory a conformant client provides. Its tests run with the
+rest:
+
+```sh
+.venv/bin/python -m pytest mcp/tests/test_plugin_notes.py -q
+```
+
+To drive the server by hand, supply the two plugin variables the way a client
+would and use the same stdio probe as Part 1 (the tools are `plugin_info`,
+`note_add`, `note_list`, `note_clear`):
+
+```sh
+PLUGIN_ROOT="$PWD/plugins/example-plugin" PLUGIN_DATA=/tmp/plugin-data \
+  python3 plugins/example-plugin/server/plugin_notes.py
+```
+
+A local coding agent that implements Agent Plugins loads the directory
+directly; one that does not can still register the server from `mcp.json` by
+hand. Under fleet the server runs host-side (the control-plane pod on a
+cluster) and its tools appear as `mcp_plugin_notes_<tool>`; the skill joins the
+roster like any other and reaches sandbox pods through the staged tree above.
 
 ---
 
@@ -486,8 +518,10 @@ a scheduled run.
 tools; `manifest.yaml` parses and agrees with the servers and both
 Containerfiles; the ranker returns sensible results; Rowan and the base prompt
 produce the intended behavior; `ask-the-runbooks` cites correctly and refuses
-correctly; the skills' scripts run; the gated connector stays dark without its
-token and degrades gracefully without a workspace.
+correctly; the skills' scripts run; the plugin's server round-trips notes
+through `PLUGIN_DATA` and its `plugin.json` allowlist names real tools; the
+gated connector stays dark without its token and degrades gracefully without a
+workspace.
 
 **Not proved, and not provable here:**
 

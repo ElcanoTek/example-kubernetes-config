@@ -78,8 +78,8 @@ jobs:
         # Run from the repo root so ruff discovers ruff.toml (config lives at
         # the repo root, not under mcp/).
         run: |
-          ruff check mcp/
-          ruff format --check mcp/
+          ruff check mcp/ plugins/
+          ruff format --check mcp/ plugins/
 
       - name: Pytest (excluding expensive)
         # Run from the repo root so pytest discovers pytest.ini (which registers

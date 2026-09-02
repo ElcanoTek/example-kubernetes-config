@@ -43,9 +43,10 @@ compute it; the profiler is a first look, not the analysis.
 
 ## If the script cannot be read
 
-On the Kubernetes path this file and the script reach the sandbox only through
-the sandbox image. If `python3 skills/csv-profiler/scripts/profile_csv.py`
-reports the file does not exist, do not reimplement it inline and do not guess
-at its output — say the skill's script is not available in this deployment and
-compute what you need directly with `run_python`. See the README's
-`skills_builtin` section for the cause.
+On the Kubernetes path this file and the script reach the sandbox through the
+skills tree fleet stages into the workspace claim at boot. If
+`python3 skills/csv-profiler/scripts/profile_csv.py` reports the file does not
+exist, do not reimplement it inline and do not guess at its output — say the
+skill's script is not available in this deployment and compute what you need
+directly with `run_python`. (The operator-side cause is a failed staging step;
+the README's "Skills on Kubernetes" section explains it.)

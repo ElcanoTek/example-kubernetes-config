@@ -77,11 +77,15 @@ things are genuinely different, and they are why this repo has a
    subprocesses of the fleet process, because that is where credentials live.
    Sandbox pods get no env, no secrets, and no service-account token.
 3. **A sandbox pod mounts exactly one thing — the workspace claim.** There is
-   no host filesystem, so `protocols/`, `personas/`, `system_prompts/` and
-   `skills/` reach a sandbox only if the *sandbox image* carries them at the
-   same absolute paths, and only if the deployment **declares** that it does
+   no host filesystem, so `protocols/`, `personas/` and `system_prompts/`
+   reach a sandbox only if the *sandbox image* carries them at the same
+   absolute paths, and only if the deployment **declares** that it does
    (`bundle_docs_in_image`). Bake without declaring and the file tools stay
-   refused; declare without baking and reads fail not-found.
+   refused; declare without baking and reads fail not-found. **Skills take the
+   other route:** fleet stages the skills tree — its built-in pack, every
+   plugin's skills, this bundle's `skills/` — into the workspace claim at boot
+   and every pod mounts it read-only (fleet ADR-0055), so skills work in a pod
+   with no bake and no declaration.
 4. **Some things degrade, and the guide says which.** Egress sealing becomes a
    NetworkPolicy your CNI must enforce; `allowlisted` egress mode is refused at
    boot; there is no per-pod pids limit and no per-sandbox resource telemetry;
@@ -101,8 +105,8 @@ export PERSONA_DEFAULT=assistant     # personas/assistant.yaml — the persona n
 
 At boot fleet parses `manifest.yaml`, resolves each MCP server's **enable gate**
 and `${VAR}` env interpolation against the process environment, and reads the
-`system_prompts/`, `personas/`, `protocols/`, `prompts/` and `skills/`
-directories. `PERSONA_DEFAULT` selects the default persona by **file basename**
+`system_prompts/`, `personas/`, `protocols/`, `prompts/`, `skills/` and
+`plugins/` directories. `PERSONA_DEFAULT` selects the default persona by **file basename**
 (`assistant`, not the display name `Rowan`); users still switch persona per
 conversation in the UI. The loader and the authoritative schema live in
 [`internal/clientconfig/clientconfig.go`](https://github.com/ElcanoTek/fleet/blob/main/internal/clientconfig/clientconfig.go).
@@ -140,6 +144,8 @@ example-kubernetes-config/
   skills/                # <name>/SKILL.md folders — instructions + bundled code
     example-skill/       #   annotated template (+ REFERENCE.md + a demo script)
     csv-profiler/        #   profile a CSV with the stdlib only
+  plugins/               # Agent Plugins (agent-plugins.org): portable skills + MCP packages
+    example-plugin/      #   plugin.json + one skill + mcp.json (a stdio server using PLUGIN_ROOT/PLUGIN_DATA)
   mcp/                   # the bundle's Python MCP servers — they run in the
     runbook_library.py   #   CONTROL-PLANE pod, never in a sandbox
     release_tracker.py
@@ -151,7 +157,7 @@ example-kubernetes-config/
     Containerfile        # the BASE sandbox image (also the podman path's image)
   deploy/kubernetes/     # ← what makes this repo the Kubernetes one
     Containerfile.control-plane   # fleet binary + python3 + this bundle
-    Containerfile.sandbox         # the base image + the baked read-only docs
+    Containerfile.sandbox         # the base image + the baked read-only docs (not skills — staged by fleet)
     values-example.yaml           # documented production overlay for fleet's chart
     values-kind.yaml              # evaluation overlay, with its four caveats named
     kind-cluster.yaml             # one-node kind cluster, and why one node
@@ -241,28 +247,76 @@ reviewable in Git. Skills under `skills/` follow the open
 progressive disclosure so only the description sits in the prompt roster until
 the skill is used.
 
-**All three reach a sandbox only via the sandbox image on the cluster path** —
-see `deploy/kubernetes/Containerfile.sandbox`. Skills additionally require
-`skills_builtin: false`, which this bundle sets; see the next section.
+**Protocols and prompts reach a sandbox only via the sandbox image on the
+cluster path** — see `deploy/kubernetes/Containerfile.sandbox`. Skills take a
+different route; see the next section.
 
-### `skills_builtin: false` — a Kubernetes decision
+### Skills on Kubernetes — staged, not baked
 
 fleet embeds a built-in Agent Skills pack that every bundle inherits alongside
-its own `skills/`. **This bundle turns it off**, and not for taste.
+its own `skills/`, and this bundle inherits it. The tree an agent reads is
+assembled **at boot** from three sources — that pack (inside the fleet
+binary), every Agent Plugin's skills, and `skills/` — so no sandbox image can
+carry it: its path is hash-derived and two of its sources are not files in this
+repo.
 
-When the pack is inherited, fleet's skills directory is a *merged* tree
-materialized under the control plane's data dir. That path lives on the data
-PVC, which sandbox pods never mount, and no sandbox image can carry a path
-derived from a runtime hash. So on the cluster path an inherited pack means
-every skill is **description-only** inside a sandbox: the agent sees each
-skill's name and description in its prompt roster (read host-side, which still
-works) but cannot open `SKILL.md`, cannot open a reference file, and cannot run
-a bundled script.
+On the kubernetes backend fleet therefore **stages the complete tree into the
+workspace claim** at boot (`<workspace root>/skills`) and every sandbox pod
+mounts it read-only — the same mechanism as fleet's shared file library
+([fleet ADR-0055](https://github.com/ElcanoTek/fleet/blob/main/docs/adr/0055-kubernetes-skills-staged-into-the-workspace-claim.md)).
+`SKILL.md`, reference files and bundled scripts all resolve from inside a pod,
+for the file tools and for `bash`/`run_python`, with no `COPY skills/` in the
+sandbox image and no `bundle_docs_in_image` involvement. A skill edit is a
+new control-plane image (the bundle is baked into it) and nothing else.
 
-With `skills_builtin: false`, `skills/` is this bundle's own directory, the
-sandbox image bakes it, `bundle_docs_in_image` vouches for it, and skills work
-end to end in a pod. **There is no setting that gives you both.** Flipping it
-back also changes the single-box podman install, where both work fine.
+The cost is honest and small: the skill bytes exist twice on a cluster
+(control-plane image + staged copy in the claim), and the control plane must be
+able to create that directory — the same requirement the shared library
+already imposes. If staging fails, boot continues and the log says
+`warning: stage skills for the kubernetes sandbox backend`; skills are then
+rostered but unreadable in pods. On a fleet predating ADR-0055 the old remedy
+(`skills_builtin: false` + `COPY skills/`) applies — see the dated note in
+`manifest.yaml`.
+
+### Agent Plugins — the portable package for skills + MCP servers
+
+`plugins/` holds **Agent Plugins**: the open, vendor-neutral
+[Agent Plugins standard](https://agent-plugins.org) (v1.0.0) that packages Agent
+Skills and MCP servers together in one directory with a `plugin.json` manifest.
+The same directory loads in fleet **and** in Cursor, VS Code, GitHub Copilot,
+ChatGPT/Codex, Kiro and the other compatible clients, so a plugin is written
+once and shared across tools.
+
+```
+plugins/
+  example-plugin/
+    plugin.json                       # REQUIRED: "$schema" + "name" (+ metadata)
+    skills/plugin-quickstart/SKILL.md # an ordinary Agent Skill
+    mcp.json                          # one stdio server: python3 ${PLUGIN_ROOT}/server/plugin_notes.py
+    server/plugin_notes.py            # a scratch-notes server that persists in ${PLUGIN_DATA}
+```
+
+fleet (from the release that implements [ADR-0054](https://github.com/ElcanoTek/fleet/blob/main/docs/adr/0054-agent-plugins.md))
+merges a plugin's skills into the same roster as `skills/` — this bundle's own
+skill wins a name collision, a plugin's wins over fleet's built-in pack — and
+appends its `mcp.json` servers to the MCP catalog as always-on entries launched
+in the plugin root with `PLUGIN_ROOT` / `PLUGIN_DATA` set, subject to every gate
+a manifest server already has. Older fleet releases ignore the directory; a
+plugin defect never blocks the bundle, and `fleet validate-config` lists the
+problems as advisories. Details: fleet's
+[`docs/AGENT-PLUGINS.md`](https://github.com/ElcanoTek/fleet/blob/main/docs/AGENT-PLUGINS.md).
+
+What Kubernetes changes about a plugin is *where its parts run*, not the
+format: the server runs in the **control-plane pod** (so `plugins/` is copied
+into `Containerfile.control-plane`, its runtime deps come from
+`mcp/requirements.txt`, and `PLUGIN_DATA` lands on the data PVC), and its
+skills reach sandbox pods through the staged skills tree above.
+
+| Part | What it shows |
+| --- | --- |
+| `plugin-quickstart` skill | How the plugin is laid out, what the cluster path changes, how to use its server, and how to author or port a plugin. |
+| `plugin_notes` server | A stdio MCP server started as `python3 ${PLUGIN_ROOT}/server/plugin_notes.py` that keeps a scratch-notes file under `${PLUGIN_DATA}`. Tools: `plugin_info`, `note_add`, `note_list`, `note_clear`. Tested in `mcp/tests/test_plugin_notes.py`. |
+| `com.elcanotek.fleet` extension | The spec's reverse-domain namespace for client-specific data, here carrying fleet's per-server `tools` allowlist and `fleet mcp test --deep` `probe`. Other clients ignore it; nothing credential-shaped can go there. |
 
 ### Sandbox
 
@@ -318,10 +372,13 @@ from real runs with `fleet eval capture --task <uuid>`.
 5. **Govern new tools.** Read-only tools in `agent_policy.parallel_safe_tools`;
    writes and consequential actions in `critical_tools` so they require an
    audit gate.
-6. **Write personas, prompts, protocols, and skills.** Copy an existing one and
-   adapt it. **Anything the agent reads from inside a sandbox must be in a
-   directory `deploy/kubernetes/Containerfile.sandbox` bakes** — add the `COPY`
-   line in the same PR.
+6. **Write personas, prompts, protocols, skills and plugins.** Copy an existing
+   one and adapt it. **Anything the agent reads from inside a sandbox must be
+   in a directory `deploy/kubernetes/Containerfile.sandbox` bakes** — add the
+   `COPY` line in the same PR — with one exception: `skills/` and a plugin's
+   skills are staged into the workspace claim by fleet itself, so they need no
+   `COPY` line (and must not get one). A plugin's *server* runs in the
+   control-plane pod; its dependencies go in `mcp/requirements.txt`.
 7. **Tune the sandbox image.** Add packages your agents need to
    `sandbox/Containerfile`, keeping the uid-1000 / `/home/sandbox` / `python3`
    constraints intact.

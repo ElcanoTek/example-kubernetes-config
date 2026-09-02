@@ -1,0 +1,38 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "example-plugin",
+  "version": "1.0.0",
+  "description": "Annotated example Agent Plugin: one skill plus one stdio MCP server, packaged in the portable agent-plugins.org format that fleet, Cursor, VS Code, Copilot, Codex and Kiro all load. On the Kubernetes path the server runs in the control-plane pod and the skill reaches sandbox pods through fleet's staged skills tree.",
+  "author": {
+    "name": "ElcanoTek",
+    "url": "https://github.com/ElcanoTek"
+  },
+  "homepage": "https://github.com/ElcanoTek/example-kubernetes-config/tree/main/plugins/example-plugin",
+  "repository": "https://github.com/ElcanoTek/example-kubernetes-config",
+  "license": "MIT",
+  "keywords": [
+    "example",
+    "template",
+    "fleet",
+    "kubernetes"
+  ],
+  "extensions": {
+    "com.elcanotek.fleet": {
+      "mcp_servers": {
+        "plugin_notes": {
+          "tools": [
+            "plugin_info",
+            "note_add",
+            "note_list",
+            "note_clear"
+          ],
+          "probe": {
+            "tool": "plugin_info",
+            "contains": "plugin_root"
+          },
+          "description": "Scratch notes that persist in PLUGIN_DATA across restarts and plugin updates. Shared by every conversation on this deployment."
+        }
+      }
+    }
+  }
+}

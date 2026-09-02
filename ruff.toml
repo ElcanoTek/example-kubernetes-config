@@ -4,10 +4,11 @@
 target-version = "py311"
 line-length = 120
 
-# The MCP servers, their tests, and the skills' bundled scripts. skills/ is
-# included on purpose: those scripts run inside the sandbox, and a template
-# that ships an unlinted script is a template that ships a broken one.
-include = ["mcp/**/*.py", "skills/**/*.py"]
+# The MCP servers, their tests, the skills' bundled scripts, and any Agent
+# Plugin's bundled servers/scripts under plugins/. skills/ is included on
+# purpose: those scripts run inside the sandbox, and a template that ships an
+# unlinted script is a template that ships a broken one.
+include = ["mcp/**/*.py", "skills/**/*.py", "plugins/**/*.py"]
 
 [lint]
 select = [

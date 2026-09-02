@@ -85,7 +85,8 @@ make images FLEET="$FLEET" REGISTRY=localhost TAG="$TAG"
 ```
 
 Do **not** skip the derived sandbox image in favor of the base. The base has no
-`protocols/`, `personas/`, `system_prompts/` or `skills/` in it, and the whole
+`protocols/`, `personas/` or `system_prompts/` in it (skills are staged into
+the workspace claim by fleet and are not in either image), and the whole
 point of rehearsing on kind is to catch that class of mistake here.
 
 ## 3. Side-load them

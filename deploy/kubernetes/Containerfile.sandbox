@@ -18,13 +18,21 @@
 # `make sandbox` does both. BASE has no default on purpose: an accidental
 # `:latest` is how you ship a docs snapshot layered onto an unrelated base.
 #
-# WHY THIS EXISTS. Under podman, fleet bind-mounts protocols/, personas/,
-# system_prompts/ and the skills dir into the sandbox read-only at the same
-# absolute path, and symlinks them into the per-conversation workspace — which
-# is why `cat protocols/ask-the-runbooks.md` resolves for view_file, bash and
+# WHY THIS EXISTS. Under podman, fleet bind-mounts protocols/, personas/ and
+# system_prompts/ into the sandbox read-only at the same absolute path, and
+# symlinks them into the per-conversation workspace — which is why
+# `cat protocols/ask-the-runbooks.md` resolves for view_file, bash and
 # run_python alike. Under the kubernetes backend a pod mounts ONLY the
 # workspace claim. There is no host filesystem to bind from, so fleet drops
 # those mounts (it logs that it did) and the workspace symlinks dangle.
+#
+# SKILLS ARE NOT BAKED HERE, on purpose. The skills tree an agent reads is
+# assembled at boot from fleet's built-in pack, every plugin under plugins/
+# and skills/, so no image build can carry it; fleet instead STAGES it into
+# the workspace claim at boot and every sandbox pod mounts it read-only
+# (fleet ADR-0055). A `COPY skills/` line would be a snapshot nothing ever
+# reads. On a fleet predating ADR-0055 the remedy was the opposite — see the
+# dated note in manifest.yaml's Agent Skills section.
 #
 # Baking the docs at the SAME absolute path the control-plane image uses for
 # FLEET_CLIENT_CONFIG_DIR makes those absolute symlink targets resolve again,
@@ -66,13 +74,10 @@ USER root
 COPY protocols/       /opt/fleet/client/protocols/
 COPY personas/        /opt/fleet/client/personas/
 COPY system_prompts/  /opt/fleet/client/system_prompts/
-COPY skills/          /opt/fleet/client/skills/
 
 # Root-owned, world-readable, no write bit for the sandbox user (uid 1000).
 # The pod also runs with a read-only root filesystem, so this is belt and
-# braces — but it is the belt that survives someone relaxing that. Bundled
-# scripts are invoked as `python3 skills/<name>/scripts/foo.py`, so no exec bit
-# is needed.
+# braces — but it is the belt that survives someone relaxing that.
 RUN chown -R 0:0 /opt/fleet/client \
     && chmod -R a-w,a+rX /opt/fleet/client
 

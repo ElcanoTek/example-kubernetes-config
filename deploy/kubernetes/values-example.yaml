@@ -67,9 +67,9 @@ sandbox:
     # refused at boot here.
     seccompProfile: ""
     # REQUIRED FOR THIS BUNDLE, and only true because
-    # deploy/kubernetes/Containerfile.sandbox bakes protocols/, personas/,
-    # system_prompts/ and skills/ into the sandbox image at the SAME absolute
-    # paths the control plane reads them from (/opt/fleet/client/...).
+    # deploy/kubernetes/Containerfile.sandbox bakes protocols/, personas/ and
+    # system_prompts/ into the sandbox image at the SAME absolute paths the
+    # control plane reads them from (/opt/fleet/client/...).
     #
     # Without it fleet drops those fileop read anchors and `view_file
     # protocols/ask-the-runbooks.md` is REFUSED before the file is even looked
@@ -78,10 +78,10 @@ sandbox:
     # the same commit of this repo or the agent reads one release's protocols
     # while the control plane runs another's.
     #
-    # This works for skills/ ONLY because manifest.yaml sets
-    # `skills_builtin: false`. With the built-in pack inherited, fleet's skills
-    # dir is a merged tree under the control plane's data PVC and no sandbox
-    # image can carry it.
+    # skills/ is deliberately NOT in that list and NOT covered by this flag:
+    # fleet stages the skills tree (built-in pack + plugins/ + skills/) into
+    # the workspace claim at boot and every pod mounts it read-only (fleet
+    # ADR-0055), so skills work in a pod with no bake and no declaration.
     bundleDocsInImage: true
     # Give the runners their own pool once traffic is more than a trickle:
     # label + taint the pool, fill both in, and sandbox pods pin there while

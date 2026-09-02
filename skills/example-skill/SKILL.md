@@ -53,19 +53,25 @@ authorization boundary. Govern consequential tools through `agent_policy` in
 ## What Kubernetes changes about skills
 
 Levels 2 and 3 read files **from inside the sandbox**, and a sandbox pod mounts
-only the workspace claim. Two things must both be true for a skill to work on
-the cluster path:
+only the workspace claim — no host filesystem, and (unlike `protocols/`) no
+baked copy in the sandbox image either. Skills still work in a pod because
+fleet **stages** the merged skills tree — its built-in pack, every plugin's
+skills, this `skills/` — into the workspace claim at boot and every pod mounts
+it read-only (fleet ADR-0055). The `skills/<name>/…` paths in this file resolve
+the same way they do on the single-box install.
 
-1. `deploy/kubernetes/Containerfile.sandbox` bakes `skills/` into the sandbox
-   image at the same absolute path the control plane uses, and the deployment
-   declares it (`bundle_docs_in_image`). It does; keep it that way.
-2. `manifest.yaml` sets `skills_builtin: false`. With fleet's built-in skills
-   pack inherited, the skills directory is a *merged* tree under the control
-   plane's data PVC — a path no image can carry — and every skill collapses to
-   Level 1: the agent sees this description and can open nothing.
+Two consequences for an author:
 
-If you are writing a skill and its `REFERENCE.md` cannot be read in a sandbox,
-that is the cause. See the README's `skills_builtin` section.
+1. Nothing to add to `deploy/kubernetes/Containerfile.sandbox`. A `COPY
+   skills/` line there would be a snapshot nothing reads, and the contract
+   test refuses it.
+2. A skill edit is a new **control-plane** image (the bundle is baked into it);
+   fleet re-stages the tree at boot.
+
+If a skill's `REFERENCE.md` cannot be read in a sandbox, the control plane
+could not stage the tree — `kubectl logs deploy/larkspur | grep 'stage skills'`
+says why — or the fleet predates ADR-0055 (see the dated note in
+`manifest.yaml`'s Agent Skills section).
 
 ## Running the script
 
@@ -73,8 +79,8 @@ that is the cause. See the README's `skills_builtin` section.
 python3 skills/example-skill/scripts/greet.py "Rowan"
 ```
 
-Scripts are invoked, not sourced, so no exec bit is needed — the sandbox image
-makes `skills/` read-only and non-executable on purpose.
+Scripts are invoked, not sourced, so no exec bit is needed — `skills/` is
+mounted read-only in every sandbox on purpose.
 
 ## Writing a good one
 

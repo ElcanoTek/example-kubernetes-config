@@ -54,10 +54,12 @@ steps below:
    `python3` and this bundle's requirements, and why sandbox pods can be given
    nothing at all.
 2. **A sandbox pod mounts exactly one thing: the workspace claim.** No host
-   filesystem, so none of the bundle's `protocols/`, `personas/`,
-   `system_prompts/` or `skills/` reach it — unless the *sandbox image* carries
-   them. That is the entire reason `deploy/kubernetes/Containerfile.sandbox`
-   exists.
+   filesystem, so none of the bundle's `protocols/`, `personas/` or
+   `system_prompts/` reach it — unless the *sandbox image* carries them. That
+   is the entire reason `deploy/kubernetes/Containerfile.sandbox` exists.
+   Skills are different: fleet stages the skills tree (built-in pack, plugin
+   skills, `skills/`) *into* the claim at boot and every pod mounts it
+   read-only (fleet ADR-0055), so they need no baking at all.
 
 ---
 
@@ -104,7 +106,8 @@ git -C "$FLEET" checkout <the commit you intend to run>
 git -C "$FLEET" rev-parse --short HEAD    # write this down; it goes in your change log
 ```
 
-Two things in this bundle need a recent enough fleet, and both fail *loudly*:
+Three things in this bundle need a recent enough fleet. The first two fail
+*loudly*; the third fails quietly, which is why it is listed:
 
 - `manifest.yaml`'s `sandbox.kubernetes` block, and `bundle_docs_in_image`
   inside it. fleet's manifest decoder is **strict** — on a fleet that predates
@@ -126,6 +129,18 @@ Two things in this bundle need a recent enough fleet, and both fail *loudly*:
   If `verbs:` there does not include `get`, either update your fleet checkout
   or add the verb to your own RoleBinding before you go looking for a fleet
   bug.
+- Skills in pods and the `plugins/` dir. This bundle inherits fleet's built-in
+  skills pack and ships an Agent Plugin, both of which reach a sandbox only
+  because fleet **stages the skills tree into the workspace claim** at boot
+  (ADR-0055) and loads `plugins/` (ADR-0054). An older fleet ignores
+  `plugins/` without a word and leaves every skill description-only inside a
+  pod. Check:
+  ```sh
+  grep -n 'func (b \*Bundle) StageSkillsAt' "$FLEET/internal/clientconfig/builtin_skills.go"
+  ```
+  No output means follow the dated note in `manifest.yaml`'s Agent Skills
+  section (set `skills_builtin: false`, restore `COPY skills/` in
+  `Containerfile.sandbox`) and expect no plugin.
 
 ---
 
@@ -185,6 +200,8 @@ control-plane image's `FLEET_CLIENT_CONFIG_DIR`, because the workspace symlinks
 fleet drops are **absolute** and a sandbox pod resolves them against its own
 filesystem. `mcp/` and `manifest.yaml` are deliberately *not* in the sandbox
 image: the connectors run host-side and must not be readable from a sandbox.
+Neither is `skills/`: fleet stages the skills tree into the workspace claim
+itself (step 8c proves it), so a baked copy would never be read.
 
 ---
 
@@ -361,9 +378,13 @@ kubectl -n "$NS" exec deploy/larkspur -- fleet mcp test --all --deep
 ```
 
 `runbook_library` must be connected with `rb_search` / `rb_get_runbook` /
-`rb_list_categories` and a passing probe. `release_tracker` is connected only
-if you supplied `DEPLOY_API_TOKEN`; "disabled — gate not met" is the correct
-answer otherwise, not a failure.
+`rb_list_categories` and a passing probe. `plugin_notes` — the example Agent
+Plugin's server, loaded from `plugins/example-plugin` — must be connected with
+`plugin_info` / `note_add` / `note_list` / `note_clear` and a passing probe;
+if it is missing entirely, the control-plane image was built without the
+`COPY plugins/` line or from a fleet that predates ADR-0054. `release_tracker`
+is connected only if you supplied `DEPLOY_API_TOKEN`; "disabled — gate not
+met" is the correct answer otherwise, not a failure.
 
 ### 8c. A sandbox pod is created, used, and deleted
 
@@ -381,11 +402,14 @@ real model call.
 ```sh
 kubectl -n "$NS" exec -i deploy/larkspur -- sh -c 'cat > /tmp/smoke.yaml' <<'YAML'
 prompt: |
-  Two things, in the sandbox:
+  Three things, in the sandbox:
   1. Run `python3 -c "print(6*7)"` and report the number it printed.
   2. Read protocols/ask-the-runbooks.md with the view_file tool and quote its
      first heading. If view_file errors, say so explicitly, then fall back to
      `cat` and quote it that way.
+  3. Run `python3 skills/example-skill/scripts/greet.py "Rowan"` and report
+     its output, then read skills/plugin-quickstart/SKILL.md with view_file
+     and quote its first heading.
 model: "anthropic/claude-sonnet-4.5"
 max_iterations: 8
 YAML
@@ -400,6 +424,14 @@ heading read with `view_file` — no fallback. A fallback to `cat` means the
 image bakes the docs but the declaration did not land (step 5); a "not found"
 from both means the declaration landed but the image does not carry them (step
 3c).
+
+The third item proves the **staged skills tree**: the greeting comes from a
+bundle skill's script and the heading from a skill that arrived inside the
+example *plugin*, both read from `<workspace>/skills` — a read-only subPath
+mount of the claim, not the image. If both fail not-found, the control plane
+could not stage: `kubectl logs deploy/larkspur | grep 'stage skills'` names
+the reason (usually a workspace root the control plane cannot write, or a
+fleet predating ADR-0055 — step 2).
 
 ### 8d. The lockdown seal is real
 
@@ -479,8 +511,11 @@ hurts, mount the bundle from a ConfigMap or a volume at
 split is satisfied either way — at the cost of the bundle no longer being
 pinned to an image digest.
 
-**Changing a protocol, persona, prompt or skill** means rebuilding **both**
+**Changing a protocol, persona or system prompt** means rebuilding **both**
 images, because the sandbox image carries the snapshot the agent reads.
+**Changing a prompt, a skill or a plugin** means rebuilding only the
+control-plane image: skills are staged from it into the workspace claim at
+boot, and plugins load from it.
 
 **Scaling.** Never a second control-plane replica — the chart does not even
 expose the knob. More work means raising `FLEET_MAX_CONCURRENT_AGENTS`
@@ -550,14 +585,13 @@ Measured, not guessed. fleet's own list plus the parts specific to this bundle.
 - **`write_file` / `edit_file` on bundle docs are refused**, by design. The
   declared roots are re-admitted **read-only**, so a turn cannot rewrite its own
   protocols. Reads work; writes do not; that asymmetry is the point.
-- **`skills_builtin: false` is a deliberate cost.** This bundle gives up
-  fleet's built-in Agent Skills pack so that `skills/` is its own directory and
-  can be baked into the sandbox image. With the pack inherited, fleet's skills
-  dir is a merged tree under the control plane's data PVC, which no sandbox
-  image can carry, and every skill becomes description-only inside a sandbox —
-  the agent sees the name and description but cannot open `SKILL.md` or run a
-  bundled script. **There is no setting that gives you both.** Flipping it back
-  also changes the single-box podman install, where both work fine.
+- **Skills live twice, and the control plane must be able to write the
+  claim.** Skills work in pods because fleet stages the merged tree into
+  `<workspace root>/skills` at boot (ADR-0055) — so the skill bytes exist in
+  the control-plane image *and* in the claim, and a storage class that hands
+  the control plane a root it cannot write degrades skills to description-only
+  in pods with a `stage skills` warning in the log rather than a boot failure.
+  Small, and honest.
 - **The sandbox docs snapshot can go stale.** Nothing enforces that the two
   images came from one commit. `make images` exists so the easy path is the
   correct one; the discipline is still yours.
@@ -590,5 +624,6 @@ Measured, not guessed. fleet's own list plus the parts specific to this bundle.
 | MCP servers all dead in the log | the control-plane image has no `python3` or no `mcp` module — you built from fleet's generic example Containerfile instead of this repo's. |
 | `view_file protocols/…` refused | `bundleDocsInImage` did not reach the pod. `kubectl logs deploy/larkspur \| grep -i 'bundle_docs_in_image\|supporting-doc'` prints exactly which roots fleet kept and dropped, and why. |
 | `view_file protocols/…` returns not-found | the declaration landed but the image does not carry the docs — you deployed the base sandbox image, not the derived one. |
-| A skill's `SKILL.md` cannot be opened in-sandbox | `skills_builtin` got flipped back to `true`. See §12. |
+| A skill's `SKILL.md` cannot be opened in-sandbox | `kubectl logs deploy/larkspur \| grep 'stage skills'`. A warning means the control plane could not create `<workspace>/skills` in the claim (uid 1000 / `fsGroup`); no line at all means your fleet predates ADR-0055 — see the dated note in `manifest.yaml`. |
+| `plugin_notes` is missing from `fleet mcp test --all` | the control-plane image lacks the `COPY plugins/` line, or the fleet predates ADR-0054 (it ignores `plugins/` silently). |
 | A "sealed" turn reaches the internet | your CNI does not enforce NetworkPolicy. Step 8d. |

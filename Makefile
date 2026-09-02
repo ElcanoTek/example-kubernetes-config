@@ -50,9 +50,9 @@ test: ## run the MCP server + manifest tests (excludes the `expensive` marker)
 	$(VENV)/bin/python -m pytest mcp/ -m 'not expensive' -q
 
 .PHONY: lint
-lint: ## ruff check + format --check over mcp/
-	$(VENV)/bin/python -m ruff check mcp/
-	$(VENV)/bin/python -m ruff format --check mcp/
+lint: ## ruff check + format --check over mcp/ and plugins/
+	$(VENV)/bin/python -m ruff check mcp/ plugins/
+	$(VENV)/bin/python -m ruff format --check mcp/ plugins/
 
 # ── images ──────────────────────────────────────────────────────────────────
 .PHONY: fleet-bin

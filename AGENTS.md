@@ -16,8 +16,8 @@ client-agnostic engine that ships no customer content and loads a bundle at
 boot (`FLEET_CLIENT_CONFIG_DIR`). This repo is that bundle, branded for a
 fictional company — **Larkspur** — with a default persona named **Rowan**:
 branding, model defaults, the MCP catalog (`manifest.yaml`), system prompts,
-personas, protocols, prompts, skills, two example Python MCP servers under
-`mcp/`, and — the part that makes this repo different — the cluster deployment
+personas, protocols, prompts, skills, an Agent Plugin under `plugins/`, two
+example Python MCP servers under `mcp/`, and — the part that makes this repo different — the cluster deployment
 tooling under `deploy/kubernetes/`.
 
 Nothing here is industry-specific and nothing here is secret. Larkspur is a
@@ -41,8 +41,9 @@ special-case a customer in fleet, and not to special-case Larkspur either.
 
 **Edit `mcp/` here. It is the source of truth. There is no upstream.**
 
-The two servers (`runbook_library.py`, `release_tracker.py`) were written here.
-Keep it that way.
+The two servers (`runbook_library.py`, `release_tracker.py`) were written here,
+and so was the example plugin's server
+(`plugins/example-plugin/server/plugin_notes.py`). Keep it that way.
 
 - **MUST** make MCP server changes here, as normal reviewed PRs with tests.
 - **MUST NOT** introduce an automated sync between this bundle and any other
@@ -59,11 +60,12 @@ Keep it that way.
 ```sh
 make venv     # python3 -m venv .venv + requirements.txt + requirements-dev.txt
 make test     # pytest mcp/ -m 'not expensive' -q
-make lint     # ruff check mcp/ && ruff format --check mcp/
+make lint     # ruff check mcp/ plugins/ && ruff format --check mcp/ plugins/
 ```
 
 `pytest.ini` sets `testpaths = mcp mcp/tests`; tests import servers by bare name
-(`import runbook_library`). The `expensive` marker gates tests that spend real
+(`import runbook_library`), and `mcp/tests/test_plugin_notes.py` loads the
+plugin's server by path (a plugin must stay self-contained under `plugins/`). The `expensive` marker gates tests that spend real
 API money — run those by hand with `-m expensive`, never in a batch.
 
 **The requirements split is load-bearing.** `mcp/requirements.txt` is RUNTIME
@@ -112,7 +114,7 @@ the schema names. Render and read the output anyway.
 
 1. **Single-box podman** — `fleet bootstrap` / `fleet update` on one VM; the
    sandbox image is built on the box from `sandbox/Containerfile`;
-   `protocols/`, `personas/`, `system_prompts/` and the skills dir are
+   `protocols/`, `personas/`, `system_prompts/` and the merged skills dir are
    bind-mounted read-only into every sandbox. This bundle still works there
    unchanged, and `sandbox/Containerfile` is kept honest for it.
 2. **Kubernetes** (fleet #989 / ADR-0049) — a single-replica control-plane
@@ -122,11 +124,15 @@ the schema names. Render and read the output anyway.
 What that means when you edit this repo:
 
 - **A sandbox pod mounts only the workspace claim.** Anything you write that
-  tells the agent to read or run a file under `protocols/`, `skills/`,
-  `personas/` or `system_prompts/` from inside a sandbox works on path 1, and
-  works on path 2 **only** because `deploy/kubernetes/Containerfile.sandbox`
-  bakes those dirs into the sandbox image. Add a directory the agent reads
-  in-sandbox → add it there too, and say so in the PR.
+  tells the agent to read or run a file under `protocols/`, `personas/` or
+  `system_prompts/` from inside a sandbox works on path 1, and works on path 2
+  **only** because `deploy/kubernetes/Containerfile.sandbox` bakes those dirs
+  into the sandbox image. Add a directory the agent reads in-sandbox → add it
+  there too, and say so in the PR. **Skills are the exception:** fleet stages
+  the merged skills tree (built-in pack + `plugins/*/skills` + `skills/`) into
+  the workspace claim at boot and every pod mounts it read-only (fleet
+  ADR-0055), so `skills/` must NOT be baked — a `COPY skills/` line would be a
+  snapshot nothing reads, and the contract test fails on it.
 - **Add a directory fleet reads at all → add it to
   `Containerfile.control-plane` too.** That file enumerates its `COPY` lines
   rather than `COPY . .`, on purpose (no `.git`, no `.venv`, no second copy of
@@ -177,17 +183,18 @@ What that means when you edit this repo:
   the same PR.
 - **The two images ship as a pair.** The control-plane image is authoritative;
   the sandbox image carries a read-only snapshot of the doc dirs. Any change to
-  `protocols/`, `personas/`, `system_prompts/` or `skills/` invalidates both.
-  `make images` builds both from one commit so the easy path is the correct
-  one; nothing else enforces it.
-- **`skills_builtin: false` is a Kubernetes decision, not a taste one.** With
-  fleet's built-in skills pack inherited, the skills dir is a merged tree under
-  the control plane's data PVC, which no sandbox image can carry, and every
-  skill becomes description-only inside a sandbox. There is no setting that
-  gives you both the built-in pack and working in-sandbox skill files on this
-  backend. Do not flip it back without changing the guide's honest-scope
-  section in the same PR — and note it changes the podman path too, where both
-  work fine.
+  `protocols/`, `personas/` or `system_prompts/` invalidates both; a change to
+  `skills/` or `plugins/` invalidates only the control-plane image (fleet
+  stages skills from it at boot). `make images` builds both from one commit so
+  the easy path is the correct one; nothing else enforces it.
+- **Skills are staged, never baked.** On this backend fleet re-materializes
+  the merged skills tree into `<workspace root>/skills` at boot and mounts it
+  read-only into every pod (fleet ADR-0055), which is what lets this bundle
+  inherit the built-in pack AND ship plugin skills that work in a pod. Do not
+  add `COPY skills/` to `Containerfile.sandbox`, do not claim
+  `bundle_docs_in_image` covers skills, and keep the dated note in
+  `manifest.yaml`'s Agent Skills section honest about fleets that predate the
+  staging. `skills_builtin` is a taste knob on both paths.
 - **`sandbox.backend` stays UNSET in `manifest.yaml`.** The backend is a
   property of the deployment, not the bundle; the chart sets
   `FLEET_SANDBOX_BACKEND=kubernetes` and env wins. Pinning it here would make
@@ -223,6 +230,16 @@ else:
   *file tools*, not just `run_python`.
 - Lifecycle **hooks run in the sandbox**, so a hook's command must exist in the
   *sandbox* image, not the control-plane one.
+- **Staged skills need a writable workspace root for the control plane.** The
+  staged tree is created by the control plane (uid 1000) before the pod pool
+  spawns, like the shared library's `shared/` dir. A storage class that hands
+  the control plane a root it cannot write logs
+  `warning: stage skills for the kubernetes sandbox backend` and skills fall
+  back to description-only in pods — boot still succeeds, so read the log.
+- **A plugin's server runs in the control-plane pod.** Its Python dependencies
+  are dependencies of that image (`mcp/requirements.txt`), and `PLUGIN_DATA`
+  is control-plane state on the data PVC — invisible to sandbox pods, like a
+  connector's `~/something`. Return data through tool results, not files.
 - `FLEET_DEFAULT_NETWORK_MODE=allowlisted`, `FLEET_SANDBOX_RUNTIME` and
   `FLEET_SANDBOX_SECCOMP_PROFILE` are **refused at boot** under this backend
   rather than ignored. Their replacements are NetworkPolicy shaping,

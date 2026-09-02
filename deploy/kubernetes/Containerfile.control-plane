@@ -85,6 +85,7 @@ COPY personas/           /opt/fleet/client/personas/
 COPY protocols/          /opt/fleet/client/protocols/
 COPY prompts/            /opt/fleet/client/prompts/
 COPY skills/             /opt/fleet/client/skills/
+COPY plugins/            /opt/fleet/client/plugins/
 COPY system_prompts/     /opt/fleet/client/system_prompts/
 COPY evals/              /opt/fleet/client/evals/
 COPY assets/             /opt/fleet/client/assets/

@@ -18,7 +18,8 @@
 #   internal/clientconfig/clientconfig.go in the fleet repo
 #   (https://github.com/ElcanoTek/fleet)
 # A bundle is this manifest plus the system_prompts/, personas/, protocols/,
-# prompts/, skills/, mcp/, evals/ and sandbox/ directories alongside it.
+# prompts/, skills/, plugins/, mcp/, evals/ and sandbox/ directories alongside
+# it.
 #
 # fleet's manifest decoder is STRICT: an unknown or duplicate key fails the
 # load at boot, so a typo'd key can never silently drop a policy — and a field
@@ -173,11 +174,13 @@ sandbox:
   # fleet, and comment the block out if you must.
   kubernetes:
     # Declares that the SANDBOX IMAGE carries this bundle's supporting-doc dirs
-    # (protocols/, personas/, system_prompts/, skills/) at the same absolute
-    # paths the control plane reads them from — which is exactly what
+    # (protocols/, personas/, system_prompts/) at the same absolute paths the
+    # control plane reads them from — which is exactly what
     # deploy/kubernetes/Containerfile.sandbox bakes in. Without it fleet drops
     # those fileop read anchors, and `view_file protocols/…` is REFUSED before
-    # the file is even looked for.
+    # the file is even looked for. skills/ is NOT part of this: fleet stages
+    # the skills tree into the workspace claim itself (see the Agent Skills
+    # section below), so it is neither baked nor declared.
     #
     # A DECLARATION, NOT A PROBE: fleet cannot inspect an image. A wrong
     # declaration degrades to a not-found read, never to a widened boundary —
@@ -601,31 +604,30 @@ remote_mcp_catalog: []
 
 # ── Agent Skills ────────────────────────────────────────────────────────────
 # fleet embeds a built-in Agent Skills pack that every bundle inherits
-# alongside its own skills/ dir (a bundle skill with the same name wins).
+# alongside its own skills/ dir (a bundle skill with the same name wins, and
+# an Agent Plugin's skill wins over a built-in one). This bundle inherits it.
 #
-# THIS BUNDLE TURNS THE BUILT-IN PACK OFF, and that is a KUBERNETES decision,
-# not a taste one.
+# HOW SKILLS REACH A SANDBOX POD (fleet ADR-0055). The tree an agent reads is
+# assembled at boot from three sources — the pack inside the fleet binary,
+# every plugin under plugins/, and skills/ — into one merged directory. No
+# sandbox image can carry that (its path is hash-derived and two of the
+# sources are not files in this repo), so on the kubernetes backend fleet
+# STAGES the complete tree into the workspace claim at boot
+# (<workspace root>/skills) and every sandbox pod mounts it read-only. That is
+# why deploy/kubernetes/Containerfile.sandbox bakes protocols/, personas/ and
+# system_prompts/ but NOT skills/, and why bundle_docs_in_image above says
+# nothing about skills: they work in a pod — SKILL.md, reference files and
+# bundled scripts — with no bake and no declaration, pack included.
 #
-# When the built-in pack is inherited, fleet's skills directory is a MERGED
-# tree materialized under the control plane's data dir
-# ($FLEET_DATA_DIR/skills-merged/<hash>). That path lives on the data PVC,
-# which sandbox pods never mount, and no sandbox image can carry a path derived
-# from a runtime hash. So on the cluster path an inherited pack means every
-# skill is DESCRIPTION-ONLY inside a sandbox: the agent sees each skill's name
-# and description in its prompt roster (read host-side, which still works) but
-# cannot open SKILL.md, cannot open a reference file, and cannot run a bundled
-# script.
+# DATED NOTE (2026-09-02): the staging landed in fleet with ADR-0055. On a
+# fleet predating it, an inherited pack on the cluster path meant every skill
+# was DESCRIPTION-ONLY inside a sandbox, and the remedy was
+# `skills_builtin: false` plus `COPY skills/` in Containerfile.sandbox. If you
+# must run such a fleet, restore both — and note that `skills_builtin` also
+# changes the single-box podman install, where the pack always worked.
 #
-# With skills_builtin: false, skills/ is this bundle's own directory —
-# deploy/kubernetes/Containerfile.sandbox bakes it, bundle_docs_in_image
-# vouches for it, and skills work end to end in a pod.
-#
-# There is NO setting that gives you both fleet's built-in pack and working
-# in-sandbox skill files on this backend. Flipping this back to true also
-# changes the single-box podman install (where both work fine), so make the
-# call deliberately.
-skills_builtin: false
-# skills_hidden: [name, …]   # drop individual skills
+# skills_builtin: false      # opt out of the built-in pack (a taste decision)
+# skills_hidden: [name, …]   # drop individual built-in skills
 
 # ── Evals ───────────────────────────────────────────────────────────────────
 # Not a manifest key — golden regression sets live in this bundle's evals/

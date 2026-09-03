@@ -203,6 +203,16 @@ What that means when you edit this repo:
 - **`PERSONA_DEFAULT` is a file basename**, not the `name:` field inside the
   YAML. The shipped default is `assistant` (display name Rowan). `PERSONA` is
   the sibling knob and takes a bundle-relative *path*.
+- **Every connector carries catalog copy.** `display_name` and `description`
+  on each `mcp_servers` entry are the only text a user reads in chat's Tools
+  picker and on Settings -> Connections before switching a connector on, and
+  fleet renders nothing where a description is missing — a blank row reads as
+  a broken connector. Write them in fleet's house style (its
+  `docs/MCP-CATALOG.md`, "Connector copy"): a vendor-cased display name with
+  no plumbing words, then one imperative capability sentence and — only for a
+  gated connector — a clause naming the real `enabled_env`/`enabled_groups`
+  vars. fleet only WARNS on a gap, so `mcp/tests/test_connector_copy.py` is
+  the gate.
 - **Honest docs.** If you change behavior, change the doc in the same PR — and
   if something degrades on Kubernetes relative to podman, it belongs in the
   getting-started guide's "Honest scope" section, not in a footnote.

@@ -226,12 +226,12 @@ mcp_servers:
   #    an agent at your own docs" pattern. Swap mcp/data/runbooks.json for your
   #    content, or rewrite the server to read your wiki / vector store.
   - name: runbook_library
+    display_name: "Runbook Library"
+    description: "Search and read the team's operational runbooks. No credentials required."
     type: stdio
     command: python3
     args: ["mcp/runbook_library.py"]
     always: true
-    display_name: "Runbook Library"
-    description: "Search and read the team's operational runbooks. No credentials required."
     env:
       # Optional override for where the runbook JSON lives. It must be mapped
       # HERE to work at all: fleet spawns stdio servers with a MINIMAL
@@ -259,6 +259,8 @@ mcp_servers:
   #    tracker: point DEPLOY_API_BASE_URL at any JSON API and the token is
   #    brokered host-side.
   - name: release_tracker
+    display_name: "Release Tracker"
+    description: "Read deployments and open change requests in the team's release tracker. Appears once DEPLOY_API_TOKEN is set."
     type: stdio
     command: python3
     args: ["mcp/release_tracker.py"]
@@ -271,8 +273,6 @@ mcp_servers:
     optional: true
     enabled_env: ["DEPLOY_API_TOKEN"]
     account_vars: ["DEPLOY_API_TOKEN"]
-    display_name: "Release Tracker"
-    description: "Read deployments and open change requests in the team's release tracker. Gated on DEPLOY_API_TOKEN."
     env:
       DEPLOY_API_TOKEN: "${DEPLOY_API_TOKEN}"
       DEPLOY_API_BASE_URL: "${DEPLOY_API_BASE_URL:-https://releases.example.com/api/v1}"

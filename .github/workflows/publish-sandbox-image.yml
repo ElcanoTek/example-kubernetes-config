@@ -44,7 +44,8 @@ permissions:
   contents: read
   packages: write
 
-# One publish at a time, never cancelled: two quick pushes to sandbox/ would
+# One publish at a time, and a running one is never cancelled: two quick
+# pushes to sandbox/ would
 # otherwise build in parallel, and whichever finishes last owns the tag, even
 # if it built the older commit. A newer push waiting in the queue replaces an
 # older one still waiting, so the newest commit is always published last.

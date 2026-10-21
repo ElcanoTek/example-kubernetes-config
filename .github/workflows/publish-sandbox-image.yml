@@ -44,6 +44,13 @@ permissions:
   contents: read
   packages: write
 
+# One publish at a time, never cancelled: two quick pushes to sandbox/ would
+# otherwise build in parallel, and whichever finishes last owns the tag, even
+# if it built the older commit. Queued runs publish in push order.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   publish:
     uses: ElcanoTek/fleet/.github/workflows/publish-sandbox-image.yml@main

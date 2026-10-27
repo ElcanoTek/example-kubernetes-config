@@ -121,21 +121,54 @@ def _request(method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         return _error("release tracker returned a non-JSON body")
 
 
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
+
+
+def _create_receipt_file(dir_fd: int, kind: str, body: bytes) -> str:
+    """Create a NEW receipt file inside ``dir_fd`` and return its name.
+
+    O_CREAT|O_EXCL never opens an existing name, and never follows a symlink
+    planted at it (O_NOFOLLOW says so again), so a name pre-created in the
+    shared workspace cannot redirect the write. A same-second collision gets a
+    numeric suffix instead of overwriting the earlier receipt.
+    """
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW
+    for attempt in range(100):
+        name = f"{kind}-{stamp}.json" if attempt == 0 else f"{kind}-{stamp}-{attempt}.json"
+        try:
+            fd = os.open(name, flags, 0o644, dir_fd=dir_fd)
+        except FileExistsError:
+            continue
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(body)
+        return name
+    raise FileExistsError(f"no free receipt name for {kind}-{stamp}")
+
+
 def _write_receipt(kind: str, payload: dict[str, Any], result: dict[str, Any]) -> str | None:
-    """Write a JSON receipt of a write into the workspace. Returns its path, or None."""
+    """Write a JSON receipt of a write into the workspace. Returns its path, or None.
+
+    The workspace is shared with every sandbox pod, and this server runs in the
+    control-plane pod. So the output directory is opened without following a
+    symlink (a directory swapped for one is refused) and the receipt is created
+    fresh inside that descriptor: sandbox code cannot point the write at a
+    control-plane file.
+    """
     out = _output_dir()
     if not out:
         return None
     try:
         directory = Path(out)
         directory.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-        target = directory / f"{kind}-{stamp}.json"
-        target.write_text(
-            json.dumps({"kind": kind, "submitted": payload, "result": result}, indent=2),
-            encoding="utf-8",
-        )
-        return str(target)
+        body = json.dumps({"kind": kind, "submitted": payload, "result": result}, indent=2).encode("utf-8")
+        dir_fd = os.open(directory, os.O_RDONLY | _DIRECTORY | _NOFOLLOW)
+        try:
+            name = _create_receipt_file(dir_fd, kind, body)
+        finally:
+            os.close(dir_fd)
+        return str(directory / name)
     except OSError as exc:
         logger.warning("could not write receipt to %s: %s", out, exc)
         return None

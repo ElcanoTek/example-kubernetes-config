@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 
 import httpx
 import pytest
@@ -206,6 +207,52 @@ def test_the_output_directory_is_created_if_it_does_not_exist(api, authenticated
 
     assert nested.is_dir()
     assert len(list(nested.glob("change-request-*.json"))) == 1
+
+
+def test_a_receipt_never_writes_through_a_planted_symlink(api, authenticated, monkeypatch, tmp_path):
+    """The workspace is shared with sandbox pods: a name pre-created there as a
+    symlink must not redirect the control-plane pod's write."""
+    outputs = tmp_path / "outputs"
+    outputs.mkdir()
+    victim = tmp_path / "control-plane-file"
+    victim.write_text("original", encoding="utf-8")
+    monkeypatch.setenv("DEPLOY_API_OUTPUT_DIR", str(outputs))
+    stamp = "20260101T000000Z"
+    monkeypatch.setattr(release_tracker, "datetime", _FixedClock(stamp))
+    (outputs / f"change-request-{stamp}.json").symlink_to(victim)
+
+    result = release_tracker.rt_open_change_request("checkout", "bump the timeout")
+
+    assert victim.read_text(encoding="utf-8") == "original"
+    assert result["receipt_path"] == str(outputs / f"change-request-{stamp}-1.json")
+    assert json.loads(Path(result["receipt_path"]).read_text(encoding="utf-8"))["kind"] == "change-request"
+
+
+def test_an_output_directory_swapped_for_a_symlink_is_refused(api, authenticated, monkeypatch, tmp_path):
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    outputs = tmp_path / "outputs"
+    outputs.symlink_to(elsewhere, target_is_directory=True)
+    monkeypatch.setenv("DEPLOY_API_OUTPUT_DIR", str(outputs))
+
+    result = release_tracker.rt_open_change_request("checkout", "bump the timeout")
+
+    assert "receipt_path" not in result
+    assert result["receipt"].startswith("not written")
+    assert list(elsewhere.iterdir()) == []
+
+
+class _FixedClock:
+    """Stands in for ``datetime`` so the receipt name is known in advance."""
+
+    def __init__(self, stamp: str) -> None:
+        self._stamp = stamp
+
+    def now(self, _tz: object) -> _FixedClock:
+        return self
+
+    def strftime(self, _fmt: str) -> str:
+        return self._stamp
 
 
 def test_without_a_workspace_directory_the_result_says_the_receipt_was_not_written(api, authenticated):

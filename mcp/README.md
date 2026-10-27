@@ -37,6 +37,12 @@ consequences follow:
    absolute path. `release_tracker` shows the pattern, including treating the
    variable as optional because fleet drops it on a spawn path with no
    workspace.
+4. **Write into the shared workspace without following a symlink.** Sandbox
+   pods can write there too, so a name (or the output directory itself) may
+   already be a symlink pointing at a control-plane file. Open the directory
+   with `O_NOFOLLOW` and create each file fresh (`O_CREAT|O_EXCL|O_NOFOLLOW`)
+   inside that descriptor, as `release_tracker`'s receipts do; never
+   `Path.write_text` a name in the workspace.
 
 Nothing here reaches a sandbox pod: those get no env, no secret mounts, and no
 service-account token.

@@ -530,12 +530,6 @@ agent_policy:
   critical_tools:
     - open_change_request
   critical_tool_substitutes: {}
-  # Per-tool approval windows in SECONDS, keyed by the same bare suffix.
-  # Highest-priority layer of the chain (per-tool > per-conversation >
-  # FLEET_APPROVAL_TIMEOUT_SECONDS > 300s default); an approval that times out
-  # is DENIED. Omit the map to use the global default everywhere.
-  critical_tool_timeouts:
-    open_change_request: 600
 
 # ── Governed lifecycle hooks ────────────────────────────────────────────────
 # Bundle-declared commands that run INSIDE the per-turn sandbox at fixed

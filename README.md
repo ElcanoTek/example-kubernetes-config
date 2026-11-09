@@ -213,8 +213,7 @@ an older fleet fails the whole bundle. Full reference: fleet's
   and every sandbox share.
 
 `rt_open_change_request` is listed under `agent_policy.critical_tools`, so fleet
-stops and takes an **audit confirmation** before it runs, with a per-tool
-approval window from `critical_tool_timeouts`. The read tools are in
+stops and takes an **audit confirmation** before it runs. The read tools are in
 `parallel_safe_tools`, so fleet may dispatch them concurrently within a turn.
 
 **On a cluster both servers are subprocesses of the control-plane pod.** That

@@ -198,9 +198,8 @@ def rt_open_change_request(service: str, summary: str, detail: str = "") -> dict
 
     Listed in the manifest's agent_policy.critical_tools (by the bare suffix
     ``open_change_request``), so fleet holds the call for an explicit audit
-    confirmation before it runs, with a per-tool approval window from
-    critical_tool_timeouts. Do not add a write tool without adding it there in
-    the same PR.
+    confirmation before it runs. Do not add a write tool without adding it
+    there in the same PR.
 
     Args:
         service: the service the change targets.

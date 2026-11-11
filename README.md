@@ -410,3 +410,9 @@ from real runs with `fleet eval capture --task <uuid>`.
 ## License
 
 Released under the [MIT License](LICENSE).
+
+## Interface languages
+
+Fleet can display this bundle in English, Spanish and Portuguese. See
+[the locale catalog guide](locales/README.md) for the language selector,
+compatibility and translation checks.

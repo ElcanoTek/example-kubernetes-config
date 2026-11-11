@@ -15,6 +15,7 @@
   "How do we do X here? Answered from the runbook library, with the runbook cited.": "Como fazemos X aqui? Respostas da biblioteca de manuais operacionais, com referência ao manual utilizado.",
   "I'd like to analyze a dataset. Ask me what you need to know, then load it with Python and walk me through what stands out.": "Gostaria de analisar um conjunto de dados. Pergunte-me o que precisar, carregue-o com Python e explique-me os resultados mais relevantes.",
   "Incident Timeline": "Cronologia de um incidente",
+  "Larkspur Tools": "Ferramentas do Larkspur",
   "Larkspur — your team's AI workspace": "Larkspur: o espaço de trabalho de IA da sua equipa",
   "Paste or attach a document and get a concise, structured summary.": "Cole ou anexe um documento e receba um resumo conciso e estruturado.",
   "Persistent, multi-turn conversations with real tool use across your files, your data, and the systems your team already runs.": "Conversas persistentes de vários turnos com utilização real de ferramentas sobre os seus ficheiros, dados e os sistemas que a sua equipa já utiliza.",

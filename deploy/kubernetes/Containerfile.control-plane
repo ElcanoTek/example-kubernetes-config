@@ -80,6 +80,7 @@ RUN chmod 0755 /usr/local/bin/fleet
 # fleet drops (protocols → <bundle>/protocols, …) are ABSOLUTE, and a sandbox
 # pod resolves them against its OWN filesystem.
 COPY manifest.yaml       /opt/fleet/client/manifest.yaml
+COPY locales/       /opt/fleet/client/locales/
 COPY mcp/                /opt/fleet/client/mcp/
 COPY personas/           /opt/fleet/client/personas/
 COPY protocols/          /opt/fleet/client/protocols/
